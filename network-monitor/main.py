@@ -53,8 +53,9 @@ class NetworkMonitorNode:
                 "checks": [],
             }
 
-        # Resolve machine_id: env var > hostname
+        # Resolve scope and machine_id from env vars
         import os
+        self.scope = os.environ.get("BUBBALOOP_SCOPE", "local")
         self.machine_id = os.environ.get(
             "BUBBALOOP_MACHINE_ID", socket.gethostname()
         )
@@ -67,16 +68,16 @@ class NetworkMonitorNode:
         self.session = zenoh.open(zenoh_config)
         logger.info("Connected to zenoh")
 
-        # Build machine-scoped topic: bubbaloop/{machine_id}/{publish_topic}
+        # Build scoped topic: bubbaloop/{scope}/{machine_id}/{publish_topic}
         topic_suffix = self.config["publish_topic"]
-        self.full_topic = f"bubbaloop/{self.machine_id}/{topic_suffix}"
+        self.full_topic = f"bubbaloop/{self.scope}/{self.machine_id}/{topic_suffix}"
 
         # Setup publishers
         self.publisher = self.session.declare_publisher(self.full_topic)
         logger.info(f"Publishing to: {self.full_topic}")
 
         self.health_publisher = self.session.declare_publisher(
-            "bubbaloop/nodes/network-monitor/health"
+            f"bubbaloop/{self.scope}/{self.machine_id}/health/network-monitor"
         )
 
         self.hostname = socket.gethostname()
@@ -211,7 +212,8 @@ class NetworkMonitorNode:
                 pub_time=pub_ns,
                 sequence=self.sequence,
                 frame_id="network-monitor",
-                machine_id=self.hostname,
+                machine_id=self.machine_id,
+                scope=self.scope,
             )
         )
         status.checks.extend(checks)

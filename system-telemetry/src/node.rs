@@ -72,6 +72,7 @@ pub struct SystemTelemetryNode {
     system: System,
     disks: Disks,
     networks: Networks,
+    scope: String,
     machine_id: String,
 }
 
@@ -97,10 +98,11 @@ impl SystemTelemetryNode {
             .await
             .map_err(|e| anyhow::anyhow!("Failed to open zenoh session: {}", e))?;
 
+        let scope = std::env::var("BUBBALOOP_SCOPE").unwrap_or_else(|_| "local".to_string());
         let machine_id = std::env::var("BUBBALOOP_MACHINE_ID")
             .unwrap_or_else(|_| System::host_name().unwrap_or_else(|| "unknown".to_string()));
 
-        let full_topic = format!("bubbaloop/{}/{}", machine_id, config.publish_topic);
+        let full_topic = format!("bubbaloop/{}/{}/{}", scope, machine_id, config.publish_topic);
         log::info!("Publishing to: {}", full_topic);
 
         let mut system = System::new();
@@ -122,6 +124,7 @@ impl SystemTelemetryNode {
             system,
             disks,
             networks,
+            scope,
             machine_id,
         })
     }
@@ -130,10 +133,10 @@ impl SystemTelemetryNode {
     pub async fn run(mut self, shutdown_tx: tokio::sync::watch::Sender<()>) -> Result<()> {
         let mut shutdown_rx = shutdown_tx.subscribe();
 
-        // Build machine-scoped topic: bubbaloop/{machine_id}/{publish_topic}
+        // Build scoped topic: bubbaloop/{scope}/{machine_id}/{publish_topic}
         let full_topic = format!(
-            "bubbaloop/{}/{}",
-            self.machine_id, self.config.publish_topic
+            "bubbaloop/{}/{}/{}",
+            self.scope, self.machine_id, self.config.publish_topic
         );
 
         // Create ros-z node and typed publisher
@@ -150,9 +153,13 @@ impl SystemTelemetryNode {
             .map_err(|e| anyhow::anyhow!("Failed to create metrics publisher: {}", e))?;
 
         // Health heartbeat via vanilla zenoh (simple string, not protobuf)
+        let health_topic = format!(
+            "bubbaloop/{}/{}/health/system-telemetry",
+            self.scope, self.machine_id
+        );
         let health_publisher = self
             .zenoh_session
-            .declare_publisher("bubbaloop/nodes/system-telemetry/health")
+            .declare_publisher(&health_topic)
             .await
             .map_err(|e| anyhow::anyhow!("Failed to create health publisher: {}", e))?;
 
@@ -314,6 +321,7 @@ impl SystemTelemetryNode {
                 sequence,
                 frame_id: "system-telemetry".to_string(),
                 machine_id: self.machine_id.clone(),
+                scope: self.scope.clone(),
             }),
             cpu,
             memory,

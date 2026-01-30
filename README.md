@@ -19,42 +19,50 @@ daemon + nodes  <--- Zenoh --->   daemon + nodes
 
 | Node | Type | Topic | Description |
 |------|------|-------|-------------|
-| **system-telemetry** | Rust (ros-z) | `bubbaloop/{machine_id}/system-telemetry/metrics` | CPU, memory, disk, network, and load metrics via `sysinfo` |
-| **network-monitor** | Python | `bubbaloop/{machine_id}/network-monitor/status` | HTTP endpoint, DNS resolution, and ICMP ping health checks |
+| **system-telemetry** | Rust (ros-z) | `bubbaloop/{scope}/{machine}/system-telemetry/metrics` | CPU, memory, disk, network, and load metrics via `sysinfo` |
+| **network-monitor** | Python | `bubbaloop/{scope}/{machine}/network-monitor/status` | HTTP endpoint, DNS resolution, and ICMP ping health checks |
 
 ## Node Lifecycle
 
 | Stage | CLI Command | Zenoh API (daemon) |
 |-------|-------------|--------------------|
 | Scaffold | `bubbaloop node init <name> -t rust` | — |
-| Register | `bubbaloop node add /path/to/node` | `{mid}/daemon/api/nodes/add` `{"node_path": "..."}` |
-| Build | `bubbaloop node build <name>` | `{mid}/daemon/api/nodes/{name}/command` `{"command": "build"}` |
-| Start | `bubbaloop node start <name>` | `{mid}/daemon/api/nodes/{name}/command` `{"command": "start"}` |
-| Running | — (publishes heartbeats) | `{mid}/daemon/api/nodes/{name}` (query status) |
-| Stop | `bubbaloop node stop <name>` | `{mid}/daemon/api/nodes/{name}/command` `{"command": "stop"}` |
-| Logs | `bubbaloop node logs <name> -f` | `{mid}/daemon/api/nodes/{name}/logs` |
+| Register | `bubbaloop node add /path/to/node` | `{scope}/{mid}/daemon/api/nodes/add` `{"node_path": "..."}` |
+| Build | `bubbaloop node build <name>` | `{scope}/{mid}/daemon/api/nodes/{name}/command` `{"command": "build"}` |
+| Start | `bubbaloop node start <name>` | `{scope}/{mid}/daemon/api/nodes/{name}/command` `{"command": "start"}` |
+| Running | — (publishes heartbeats) | `{scope}/{mid}/daemon/api/nodes/{name}` (query status) |
+| Stop | `bubbaloop node stop <name>` | `{scope}/{mid}/daemon/api/nodes/{name}/command` `{"command": "stop"}` |
+| Logs | `bubbaloop node logs <name> -f` | `{scope}/{mid}/daemon/api/nodes/{name}/logs` |
 
-All `{mid}` paths are prefixed with `bubbaloop/` (e.g., `bubbaloop/{machine_id}/daemon/api/nodes`). The daemon has no HTTP server -- all API access is via Zenoh queryables. The CLI wraps these for convenience.
+All Zenoh paths are prefixed with `bubbaloop/` (e.g., `bubbaloop/local/jetson1/daemon/api/nodes`). The daemon has no HTTP server -- all API access is via Zenoh queryables. The CLI wraps these for convenience.
 
 **Full command set:** `start`, `stop`, `restart`, `build`, `clean`, `install`, `uninstall`, `enable_autostart`, `disable_autostart`, `remove`
 
 ## Topic Convention
 
-All data topics are machine-scoped:
+All topics follow a scoped hierarchy:
 
 ```
-bubbaloop/{machine_id}/{node-name}/{resource}
+bubbaloop/{scope}/{machine}/{node-name}/{resource}
 ```
 
-The `machine_id` defaults to the system hostname and can be overridden via `BUBBALOOP_MACHINE_ID` env var. This enables multi-machine deployments where each device publishes to its own namespace.
+| Variable | Default | Purpose |
+|----------|---------|---------|
+| `BUBBALOOP_SCOPE` | `local` | Deployment context (e.g., `warehouse-east`, `barn-north`, `fleet-alpha`) |
+| `BUBBALOOP_MACHINE_ID` | hostname | Machine identifier |
 
-Health heartbeats use a fixed global path (no machine_id prefix): `bubbaloop/nodes/{name}/health`. The daemon marks a node unhealthy if no heartbeat is received for 30 seconds.
+Health heartbeats: `bubbaloop/{scope}/{machine}/health/{name}`. The daemon marks a node unhealthy if no heartbeat is received for 30 seconds.
 
 ## Multi-Machine Deployment
 
-Each machine runs its own daemon with its own `machine_id`. Topics are machine-scoped (`bubbaloop/{machine_id}/...`), so nodes on different machines publish to separate namespaces. Machines communicate via Zenoh peer-to-peer (no central broker required).
+Each machine runs its own daemon with its own `machine_id`. Set `BUBBALOOP_SCOPE` to group machines by deployment context. Topics are scoped (`bubbaloop/{scope}/{machine}/...`), so nodes on different machines publish to separate namespaces. Machines communicate via Zenoh peer-to-peer (no central broker required).
 
-For secure cross-machine communication, use **Tailscale** or **WireGuard** to create a private overlay network. Example: two Jetsons -- one running camera nodes, one running inference nodes -- connected via Tailscale, each publishing to its own machine namespace.
+**Examples:**
+- Warehouse: `BUBBALOOP_SCOPE=warehouse-east` on each dock Jetson
+- Farm: `BUBBALOOP_SCOPE=barn-north` / `barn-south` per barn
+- Fleet: `BUBBALOOP_SCOPE=fleet-alpha` on each vehicle
+
+For secure cross-machine communication, use **Tailscale** or **WireGuard** to create a private overlay network.
 
 ## Security
 
@@ -132,7 +140,7 @@ Both nodes will appear in the **Discover** tab.
 Machine (e.g., Jetson Orin)
 +-----------------------------------------+
 |  bubbaloop daemon                       |
-|  |- Zenoh API: {mid}/daemon/api/*       |
+|  |- Zenoh API: {scope}/{mid}/daemon/api/*|
 |  |- Health monitor (30s timeout)        |
 |  |                                      |
 |  +-- system-telemetry (systemd service) |

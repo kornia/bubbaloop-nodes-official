@@ -4,7 +4,7 @@ Guide for creating [bubbaloop](https://github.com/kornia/bubbaloop) nodes -- sta
 
 ## System Context
 
-A bubbaloop node is an independent process that publishes/subscribes to data via Zenoh and registers with the local bubbaloop daemon. The daemon manages lifecycle (start/stop/restart), monitors health via heartbeats, and exposes nodes through a Zenoh queryable API. The `bubbaloop` CLI and TUI wrap this API for convenience. Nodes can run on any machine -- the daemon scopes all topics by `machine_id`.
+A bubbaloop node is an independent process that publishes/subscribes to data via Zenoh and registers with the local bubbaloop daemon. The daemon manages lifecycle (start/stop/restart), monitors health via heartbeats, and exposes nodes through a Zenoh queryable API. The `bubbaloop` CLI and TUI wrap this API for convenience. Nodes can run on any machine -- the daemon scopes all topics by `scope` and `machine_id`.
 
 **When creating a node, you are building a standalone process. The daemon will manage it as a systemd service.**
 
@@ -17,7 +17,7 @@ Register a node with the daemon via CLI:
 bubbaloop node add /path/to/node
 ```
 
-This internally queries `bubbaloop/{machine_id}/daemon/api/nodes/add` with payload `{"node_path": "/path/to/node"}`. The daemon reads `node.yaml`, builds if needed, and creates a systemd user service.
+This internally queries `bubbaloop/{scope}/{machine_id}/daemon/api/nodes/add` with payload `{"node_path": "/path/to/node"}`. The daemon reads `node.yaml`, builds if needed, and creates a systemd user service.
 
 ### Zenoh Queryable API
 
@@ -25,13 +25,13 @@ The daemon has **no HTTP server**. All API access is via Zenoh queryables (`sess
 
 | Zenoh Key Expression | Payload | Description |
 |---|---|---|
-| `bubbaloop/{mid}/daemon/api/health` | None | Daemon health check |
-| `bubbaloop/{mid}/daemon/api/nodes` | None | List all nodes with status |
-| `bubbaloop/{mid}/daemon/api/nodes/add` | `{"node_path": "..."}` | Register a node |
-| `bubbaloop/{mid}/daemon/api/nodes/{name}` | None | Get single node detail |
-| `bubbaloop/{mid}/daemon/api/nodes/{name}/logs` | None | Get node logs |
-| `bubbaloop/{mid}/daemon/api/nodes/{name}/command` | `{"command": "..."}` | Execute command |
-| `bubbaloop/{mid}/daemon/api/refresh` | None | Refresh all nodes |
+| `bubbaloop/{scope}/{mid}/daemon/api/health` | None | Daemon health check |
+| `bubbaloop/{scope}/{mid}/daemon/api/nodes` | None | List all nodes with status |
+| `bubbaloop/{scope}/{mid}/daemon/api/nodes/add` | `{"node_path": "..."}` | Register a node |
+| `bubbaloop/{scope}/{mid}/daemon/api/nodes/{name}` | None | Get single node detail |
+| `bubbaloop/{scope}/{mid}/daemon/api/nodes/{name}/logs` | None | Get node logs |
+| `bubbaloop/{scope}/{mid}/daemon/api/nodes/{name}/command` | `{"command": "..."}` | Execute command |
+| `bubbaloop/{scope}/{mid}/daemon/api/refresh` | None | Refresh all nodes |
 
 **Commands:** `start`, `stop`, `restart`, `build`, `clean`, `install`, `uninstall`, `enable_autostart`, `disable_autostart`, `remove`
 
@@ -43,7 +43,7 @@ Every node **MUST** publish heartbeats:
 
 | Field | Value |
 |-------|-------|
-| Topic | `bubbaloop/nodes/{name}/health` (global, no machine_id prefix) |
+| Topic | `bubbaloop/{scope}/{machine}/health/{name}` |
 | Frequency | At least every 10 seconds (daemon timeout is 30s) |
 | Payload | Simple string: node name or `"alive"` |
 | Transport | Vanilla zenoh `session.put()` -- NOT ros-z, NOT protobuf |
@@ -80,27 +80,40 @@ Every node directory MUST contain:
 
 ### Topic Naming Convention
 
-All data topics MUST be machine-scoped following this pattern:
+All data topics follow this scoped pattern:
 
 ```
-bubbaloop/{machine_id}/{node-name}/{resource}
+bubbaloop/{scope}/{machine}/{node-name}/{resource}
 ```
 
 Examples:
-- `bubbaloop/jetson1/system-telemetry/metrics`
-- `bubbaloop/jetson1/network-monitor/status`
-- `bubbaloop/jetson1/camera/front/compressed`
+- `bubbaloop/local/jetson1/system-telemetry/metrics` (single machine, default scope)
+- `bubbaloop/warehouse-east/dock-1/network-monitor/status` (warehouse deployment)
+- `bubbaloop/barn-north/jetson-a/camera/front/compressed` (farm deployment)
 
-The `machine_id` is resolved at runtime:
-1. `BUBBALOOP_MACHINE_ID` environment variable (if set)
-2. System hostname (fallback)
+**Environment variables:**
 
-In `config.yaml`, specify only the topic suffix (without the `bubbaloop/{machine_id}/` prefix):
+| Variable | Default | Validation | Purpose |
+|----------|---------|-----------|---------|
+| `BUBBALOOP_SCOPE` | `local` | `^[a-zA-Z0-9_\-\.]+$` (no `/`) | Deployment context (site, fleet, etc.) |
+| `BUBBALOOP_MACHINE_ID` | hostname | `^[a-zA-Z0-9_\-\.]+$` (no `/`) | Machine identifier |
+
+**Reserved names** (cannot be used as scope or machine_id): `health`, `daemon`, `camera`, `fleet`, `coordination`, `_global`
+
+In `config.yaml`, specify only the topic suffix:
 ```yaml
-publish_topic: my-node/data   # becomes bubbaloop/{machine_id}/my-node/data
+publish_topic: my-node/data   # becomes bubbaloop/{scope}/{machine}/my-node/data
 ```
 
-Health heartbeats use a fixed path (no machine_id): `bubbaloop/nodes/{name}/health`
+**Topic categories** use reserved tokens after `{machine}`:
+
+| Category | Pattern | Example |
+|----------|---------|---------|
+| Node data | `bubbaloop/{scope}/{machine}/{node}/{resource}` | `bubbaloop/local/jetson1/system-telemetry/metrics` |
+| Health | `bubbaloop/{scope}/{machine}/health/{node}` | `bubbaloop/local/jetson1/health/system-telemetry` |
+| Daemon API | `bubbaloop/{scope}/{machine}/daemon/api/{endpoint}` | `bubbaloop/local/jetson1/daemon/api/nodes` |
+| Camera | `bubbaloop/{scope}/{machine}/camera/{name}/{resource}` | `bubbaloop/local/jetson1/camera/front/compressed` |
+| Fleet | `bubbaloop/{scope}/fleet/{action}` | `bubbaloop/warehouse-east/fleet/announce` |
 
 **IMPORTANT:** Validate all topic names against `^[a-zA-Z0-9/_\-\.]+$`. Reject any topic containing characters outside this set.
 
@@ -114,8 +127,8 @@ Health heartbeats use a fixed path (no machine_id): `bubbaloop/nodes/{name}/heal
   - Use vanilla zenoh only for the health heartbeat (simple string, not protobuf)
 - **Python nodes**: Use vanilla `eclipse-zenoh` with `protobuf` for serialization
   - Compile protos from `../../bubbaloop/crates/bubbaloop-schemas/protos/` via `build_proto.py`
-- Reuse the `Header` message pattern (acq_time, pub_time, sequence, frame_id, machine_id)
-- Publish health heartbeat to `bubbaloop/nodes/{name}/health`
+- Reuse the `Header` message pattern (acq_time, pub_time, sequence, frame_id, machine_id, scope)
+- Publish health heartbeat to `bubbaloop/{scope}/{machine}/health/{name}`
 - Support graceful shutdown via SIGINT/SIGTERM
 - Accept CLI flags: `-c config.yaml` and `-e tcp/localhost:7447`
 - Use OpenTelemetry Semantic Conventions for metric naming where applicable
@@ -192,10 +205,10 @@ Before submitting a new node, verify ALL items:
 - [ ] `pixi.toml` exists with: build and run tasks
 
 ### Communication
-- [ ] Publishes data via Zenoh to machine-scoped topic: `bubbaloop/{machine_id}/{node-name}/{resource}`
-- [ ] `config.yaml` specifies topic suffix only (no `bubbaloop/{machine_id}/` prefix)
+- [ ] Publishes data via Zenoh to scoped topic: `bubbaloop/{scope}/{machine}/{node-name}/{resource}`
+- [ ] `config.yaml` specifies topic suffix only (no `bubbaloop/{scope}/{machine}/` prefix)
 - [ ] Uses protobuf serialization for all data messages
-- [ ] Publishes health heartbeat to `bubbaloop/nodes/{name}/health` (vanilla zenoh, not protobuf)
+- [ ] Publishes health heartbeat to `bubbaloop/{scope}/{machine}/health/{name}` (vanilla zenoh, not protobuf)
 - [ ] Heartbeat interval <= 10 seconds
 
 ### Security
@@ -212,7 +225,8 @@ Before submitting a new node, verify ALL items:
 - [ ] Rust: uses vanilla zenoh only for health heartbeat
 - [ ] Python: uses `eclipse-zenoh` + `protobuf`, compiles protos via `build_proto.py`
 - [ ] Accepts CLI flags: `-c config.yaml -e tcp/localhost:7447`
-- [ ] Uses `Header` message pattern (acq_time, pub_time, sequence, frame_id, machine_id)
+- [ ] Uses `Header` message pattern (acq_time, pub_time, sequence, frame_id, machine_id, scope)
+- [ ] Reads `BUBBALOOP_SCOPE` env var (default: `local`) and `BUBBALOOP_MACHINE_ID` env var (default: hostname)
 
 ### Reference
 
