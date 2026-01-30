@@ -1,0 +1,13 @@
+__pycache__/
+*.py[cod]
+*$py.class
+venv/
+.venv/
+*.egg-info/
+dist/
+build/
+
+# Generated protobuf
+*_pb2.py
+*_pb2_grpc.py
+*_pb2.pyi

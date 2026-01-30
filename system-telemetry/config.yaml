@@ -1,0 +1,15 @@
+# system-telemetry node configuration
+
+# Topic to publish metrics to
+publish_topic: system-telemetry/metrics
+
+# Publishing rate in Hz
+rate_hz: 1.0
+
+# System metrics to collect
+collect:
+  cpu: true
+  memory: true
+  disk: true
+  network: true
+  load: true

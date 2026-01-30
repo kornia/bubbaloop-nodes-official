@@ -1,0 +1,43 @@
+[package]
+name = "system-telemetry"
+version = "0.1.0"
+edition = "2021"
+description = "System telemetry metrics (CPU, memory, disk, network, load)"
+
+[[bin]]
+name = "system_telemetry_node"
+path = "src/main.rs"
+
+[dependencies]
+# Shared protobuf schemas (with ros-z trait impls)
+bubbaloop-schemas = { path = "../../bubbaloop/crates/bubbaloop-schemas", features = ["ros-z"] }
+
+# ROS-Z pub/sub (wraps zenoh with typed publishers)
+ros-z = { git = "https://github.com/ZettaScaleLabs/ros-z.git", branch = "main", features = ["protobuf"] }
+zenoh = "1.7.2"
+
+# System information
+sysinfo = "0.33"
+
+# Async runtime
+tokio = { version = "1", features = ["full"] }
+
+# Serialization
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+serde_yaml = "0.9"
+prost = "0.14"
+
+# CLI and logging
+argh = "0.1"
+log = "0.4"
+env_logger = "0.11"
+
+# Error handling
+anyhow = "1.0"
+
+# Graceful shutdown
+ctrlc = "3.4"
+
+# Time utilities
+chrono = { version = "0.4", features = ["serde"] }

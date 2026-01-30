@@ -1,0 +1,24 @@
+# network-monitor node configuration
+
+# Topic to publish status to
+publish_topic: network-monitor/status
+
+# Check rate in Hz (0.1 = once every 10 seconds)
+rate_hz: 0.1
+
+# Timeout for each check in seconds
+timeout_secs: 5
+
+# Endpoints to check
+checks:
+  - name: google
+    type: http
+    target: https://google.com
+
+  - name: dns-check
+    type: dns
+    target: google.com
+
+  - name: gateway
+    type: ping
+    target: 192.168.1.1

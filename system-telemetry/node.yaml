@@ -1,0 +1,7 @@
+name: system-telemetry
+version: "0.1.0"
+type: rust
+description: System telemetry metrics (CPU, memory, disk, network, load)
+author: Bubbaloop Team
+build: "pixi run build"
+command: "./target/release/system_telemetry_node"

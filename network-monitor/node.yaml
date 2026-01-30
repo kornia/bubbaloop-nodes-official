@@ -1,0 +1,7 @@
+name: network-monitor
+version: "0.1.0"
+type: python
+description: Network connectivity monitor (HTTP, DNS, ping health checks)
+author: Bubbaloop Team
+build: "pixi run build-proto"
+command: "pixi run run"
