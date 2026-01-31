@@ -19,26 +19,6 @@ nodes:
     subdir: openmeteo
     binary: openmeteo_node
 
-  - name: foxglove
-    description: "Foxglove Studio bridge for camera visualization"
-    version: "0.1.0"
-    type: rust
-    category: bridge
-    tags: [visualization, foxglove, camera]
-    repo: kornia/bubbaloop-nodes-official
-    subdir: foxglove
-    binary: foxglove_bridge
-
-  - name: recorder
-    description: "MCAP file recorder for ROS-Z topics"
-    version: "0.1.0"
-    type: rust
-    category: recording
-    tags: [mcap, recording, ros-z]
-    repo: kornia/bubbaloop-nodes-official
-    subdir: recorder
-    binary: mcap_recorder
-
   - name: inference
     description: "ML inference node for camera processing"
     version: "0.1.0"

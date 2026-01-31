@@ -23,8 +23,6 @@ daemon + nodes  <--- Zenoh --->   daemon + nodes
 | **network-monitor** | Python | `.../network-monitor/status` | HTTP endpoint, DNS resolution, and ICMP ping health checks |
 | **rtsp-camera** | Rust (ros-z) | `.../camera/{name}/compressed` | RTSP camera capture with hardware H264 decode via GStreamer |
 | **openmeteo** | Rust (ros-z) | `.../weather/current`, `hourly`, `daily` | Open-Meteo weather data publisher (current, hourly, daily forecasts) |
-| **foxglove** | Rust (ros-z) | — (bridge) | Foxglove Studio WebSocket bridge for camera visualization |
-| **recorder** | Rust (ros-z) | — (subscriber) | MCAP file recorder for ROS-Z topics with protobuf schemas |
 | **inference** | Rust | `.../inference/output` | ML inference node for camera stream processing |
 
 All topics are prefixed with `bubbaloop/{scope}/{machine}/`.
@@ -163,8 +161,6 @@ bubbaloop-nodes-official/
 ├── network-monitor/         # Python node (HTTP/DNS/ping)
 ├── rtsp-camera/             # Rust node (GStreamer H264 capture)
 ├── openmeteo/               # Rust node (weather API)
-├── foxglove/                # Rust node (Foxglove Studio bridge)
-├── recorder/                # Rust node (MCAP recorder)
 ├── inference/               # Rust node (ML inference)
 └── nodes.yaml               # Node registry for marketplace
 ```
