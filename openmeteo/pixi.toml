@@ -1,4 +1,4 @@
-[project]
+[workspace]
 name = "openmeteo"
 version = "0.1.0"
 description = "Open-Meteo weather data publisher"

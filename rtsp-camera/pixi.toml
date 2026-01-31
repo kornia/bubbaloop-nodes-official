@@ -1,4 +1,4 @@
-[project]
+[workspace]
 name = "rtsp-camera"
 version = "0.1.0"
 description = "RTSP camera capture with hardware H264 decode"

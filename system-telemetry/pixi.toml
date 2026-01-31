@@ -11,6 +11,8 @@ dev = "cargo run -- -c config.yaml"
 
 [dependencies]
 rust = ">=1.75"
+protobuf = ">=3.20"
+pkg-config = ">=0.29"
 
 [target.linux-aarch64.dependencies]
 # ARM64 specific dependencies if needed

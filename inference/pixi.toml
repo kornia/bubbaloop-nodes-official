@@ -1,4 +1,4 @@
-[project]
+[workspace]
 name = "inference"
 version = "0.1.0"
 description = "Inference node for camera processing"
