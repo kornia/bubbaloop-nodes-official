@@ -27,7 +27,6 @@ fn frame_to_compressed_image(
             frame_id: camera_name.to_string(),
             machine_id: machine_id.to_string(),
             scope: scope.to_string(),
-            ..Default::default()
         }),
         format: "h264".to_string(),
         data: frame.as_slice().into(),
@@ -55,6 +54,7 @@ impl RtspCameraNode {
     }
 
     /// Compressed task: feeds decoder, publishes compressed images
+    #[allow(clippy::too_many_arguments)]
     async fn compressed_task(
         ctx: Arc<ZContext>,
         capture: Arc<H264StreamCapture>,
