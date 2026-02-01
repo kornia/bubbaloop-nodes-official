@@ -1,0 +1,49 @@
+nodes:
+  - name: rtsp-camera
+    description: "RTSP camera capture with hardware H264 decode"
+    version: "0.1.0"
+    type: rust
+    category: camera
+    tags: [video, rtsp, gstreamer, h264]
+    repo: kornia/bubbaloop-nodes-official
+    subdir: rtsp-camera
+    binary: cameras_node
+
+  - name: openmeteo
+    description: "Open-Meteo weather data publisher"
+    version: "0.1.0"
+    type: rust
+    category: weather
+    tags: [weather, api, forecast]
+    repo: kornia/bubbaloop-nodes-official
+    subdir: openmeteo
+    binary: openmeteo_node
+
+  - name: inference
+    description: "ML inference node for camera processing"
+    version: "0.1.0"
+    type: rust
+    category: inference
+    tags: [ml, inference, camera]
+    repo: kornia/bubbaloop-nodes-official
+    subdir: inference
+    binary: inference_node
+
+  - name: system-telemetry
+    description: "System telemetry metrics (CPU, memory, disk, network, load)"
+    version: "0.1.0"
+    type: rust
+    category: telemetry
+    tags: [system, cpu, memory, disk, telemetry]
+    repo: kornia/bubbaloop-nodes-official
+    subdir: system-telemetry
+    binary: system_telemetry_node
+
+  - name: network-monitor
+    description: "Network connectivity monitor (HTTP, DNS, ping health checks)"
+    version: "0.1.0"
+    type: python
+    category: monitoring
+    tags: [network, dns, ping, http, monitor]
+    repo: kornia/bubbaloop-nodes-official
+    subdir: network-monitor

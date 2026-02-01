@@ -188,7 +188,7 @@ impl SystemTelemetryNode {
                 _ = tick.tick() => {
                     let metrics = self.collect_metrics(sequence);
 
-                    if sequence % 10 == 0 {
+                    if sequence.is_multiple_of(10) {
                         log::debug!(
                             "Published metrics seq={} cpu={:.1}% mem={:.1}%",
                             sequence,
@@ -288,7 +288,7 @@ impl SystemTelemetryNode {
             self.networks.refresh(true);
             let mut bytes_sent: u64 = 0;
             let mut bytes_recv: u64 = 0;
-            for (_name, data) in self.networks.list() {
+            for data in self.networks.list().values() {
                 bytes_sent += data.total_transmitted();
                 bytes_recv += data.total_received();
             }

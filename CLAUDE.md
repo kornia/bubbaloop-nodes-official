@@ -122,7 +122,7 @@ publish_topic: my-node/data   # becomes bubbaloop/{scope}/{machine}/my-node/data
 - **Always use protobuf** for message serialization (never raw JSON for data messages)
 - Define `.proto` files in the `bubbaloop-schemas` crate (`bubbaloop/crates/bubbaloop-schemas/protos/`)
 - **Rust nodes**: Use **ros-z** (not vanilla zenoh) for typed pub/sub with `ProtobufSerdes`
-  - Depend on `bubbaloop-schemas = { path = "../../bubbaloop/crates/bubbaloop-schemas", features = ["ros-z"] }`
+  - Depend on `bubbaloop-schemas = { git = "https://github.com/kornia/bubbaloop.git", branch = "main", features = ["ros-z"] }`
   - Use `ZContextBuilder` for connection setup, `ZPub<T, ProtobufSerdes<T>>` for publishing
   - Use vanilla zenoh only for the health heartbeat (simple string, not protobuf)
 - **Python nodes**: Use vanilla `eclipse-zenoh` with `protobuf` for serialization

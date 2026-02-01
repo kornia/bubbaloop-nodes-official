@@ -19,8 +19,13 @@ daemon + nodes  <--- Zenoh --->   daemon + nodes
 
 | Node | Type | Topic | Description |
 |------|------|-------|-------------|
-| **system-telemetry** | Rust (ros-z) | `bubbaloop/{scope}/{machine}/system-telemetry/metrics` | CPU, memory, disk, network, and load metrics via `sysinfo` |
-| **network-monitor** | Python | `bubbaloop/{scope}/{machine}/network-monitor/status` | HTTP endpoint, DNS resolution, and ICMP ping health checks |
+| **system-telemetry** | Rust (ros-z) | `.../system-telemetry/metrics` | CPU, memory, disk, network, and load metrics via `sysinfo` |
+| **network-monitor** | Python | `.../network-monitor/status` | HTTP endpoint, DNS resolution, and ICMP ping health checks |
+| **rtsp-camera** | Rust (ros-z) | `.../camera/{name}/compressed` | RTSP camera capture with hardware H264 decode via GStreamer |
+| **openmeteo** | Rust (ros-z) | `.../weather/current`, `hourly`, `daily` | Open-Meteo weather data publisher (current, hourly, daily forecasts) |
+| **inference** | Rust | `.../inference/output` | ML inference node for camera stream processing |
+
+All topics are prefixed with `bubbaloop/{scope}/{machine}/`.
 
 ## Node Lifecycle
 
@@ -78,7 +83,7 @@ See [CLAUDE.md](CLAUDE.md) for detailed security checklist when creating nodes.
 
 All protobuf definitions live in the `bubbaloop-schemas` crate (`~/bubbaloop/crates/bubbaloop-schemas/protos/`), the single source of truth:
 
-- **Rust nodes** depend on it via path: `bubbaloop-schemas = { path = "../../bubbaloop/crates/bubbaloop-schemas", features = ["ros-z"] }`
+- **Rust nodes** depend on it via git: `bubbaloop-schemas = { git = "https://github.com/kornia/bubbaloop.git", branch = "main", features = ["ros-z"] }`
 - **Python nodes** compile from its `.proto` sources via `build_proto.py`
 
 ## Quick Start
@@ -86,17 +91,11 @@ All protobuf definitions live in the `bubbaloop-schemas` crate (`~/bubbaloop/cra
 ### Install a single node
 
 ```bash
+# From GitHub (recommended)
+bubbaloop node add kornia/bubbaloop-nodes-official --subdir rtsp-camera
+
 # From local clone
-bubbaloop node add /path/to/bubbaloop-nodes-official/system-telemetry
-
-# From GitHub
-bubbaloop node add kornia/bubbaloop-nodes-official/system-telemetry
-```
-
-### Install all nodes
-
-```bash
-bubbaloop node add /path/to/bubbaloop-nodes-official
+bubbaloop node add /path/to/bubbaloop-nodes-official --subdir rtsp-camera
 ```
 
 ### Build and run locally
@@ -132,7 +131,7 @@ Add this repository as a Marketplace source to discover nodes in the bubbaloop T
 bubbaloop node add /home/nvidia/bubbaloop-nodes-official
 ```
 
-Both nodes will appear in the **Discover** tab.
+All nodes will appear in the **Discover** tab.
 
 ## Architecture
 
@@ -159,13 +158,11 @@ bubbaloop/crates/bubbaloop-schemas/  # Shared proto crate (in bubbaloop repo)
 
 bubbaloop-nodes-official/
 ├── system-telemetry/        # Rust node (ros-z + sysinfo metrics)
-│   ├── node.yaml
-│   ├── config.yaml
-│   └── src/
-└── network-monitor/         # Python node (HTTP/DNS/ping)
-    ├── node.yaml
-    ├── config.yaml
-    └── main.py
+├── network-monitor/         # Python node (HTTP/DNS/ping)
+├── rtsp-camera/             # Rust node (GStreamer H264 capture)
+├── openmeteo/               # Rust node (weather API)
+├── inference/               # Rust node (ML inference)
+└── nodes.yaml               # Node registry for marketplace
 ```
 
 ## Creating New Nodes
