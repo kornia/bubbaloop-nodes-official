@@ -1,7 +1,0 @@
-name: camera0
-publish_topic: camera/camera0/compressed
-url: "rtsp://127.0.0.1:554/stream"
-latency: 200
-decoder: cpu
-width: 640
-height: 480
