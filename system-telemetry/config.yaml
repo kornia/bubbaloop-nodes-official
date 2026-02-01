@@ -1,4 +1,5 @@
-# system-telemetry node configuration
+# Instance parameters for system-telemetry.
+# Run: ./target/release/system_telemetry_node -c config.yaml
 
 # Topic to publish metrics to
 publish_topic: system-telemetry/metrics

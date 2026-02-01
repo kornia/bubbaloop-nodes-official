@@ -78,7 +78,9 @@ async fn main() -> anyhow::Result<()> {
         hostname::get()
             .map(|h| h.to_string_lossy().to_string())
             .unwrap_or_else(|_| "unknown".to_string())
-    });
+    })
+    // Sanitize for ros-z topic compatibility (hyphens are invalid in topic components)
+    .replace('-', "_");
     log::info!("Scope: {}, Machine ID: {}", scope, machine_id);
 
     // Create vanilla zenoh session for health heartbeat
