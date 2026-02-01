@@ -1,4 +1,6 @@
-# Open-Meteo weather configuration
+# Instance parameters for openmeteo.
+# Run: ./target/release/openmeteo_node -c config.yaml
+
 # If no config file is provided, location is auto-discovered from IP
 
 # Location configuration (optional)
