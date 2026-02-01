@@ -7,7 +7,7 @@ nodes:
     tags: [video, rtsp, gstreamer, h264]
     repo: kornia/bubbaloop-nodes-official
     subdir: rtsp-camera
-    binary: cameras_node
+    binary: rtsp_camera_node
 
   - name: openmeteo
     description: "Open-Meteo weather data publisher"
