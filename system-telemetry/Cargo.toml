@@ -10,7 +10,7 @@ path = "src/main.rs"
 
 [dependencies]
 # Shared protobuf schemas (with ros-z trait impls)
-bubbaloop-schemas = { path = "../../bubbaloop/crates/bubbaloop-schemas", features = ["ros-z"] }
+bubbaloop-schemas = { git = "https://github.com/kornia/bubbaloop.git", branch = "main", features = ["ros-z"] }
 
 # ROS-Z pub/sub (wraps zenoh with typed publishers)
 ros-z = { git = "https://github.com/ZettaScaleLabs/ros-z.git", branch = "main", features = ["protobuf"] }
@@ -41,3 +41,5 @@ ctrlc = "3.4"
 
 # Time utilities
 chrono = { version = "0.4", features = ["serde"] }
+
+[workspace]
