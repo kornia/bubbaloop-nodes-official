@@ -1,6 +1,9 @@
+# Instance parameters for rtsp-camera.
+# Run: ./target/release/cameras_node -c terrace.yaml
+
 name: terrace
 publish_topic: camera/terrace/compressed
-url: "rtsp://192.168.1.151:554/stream2"
+url: "rtsp://user:pass@host:554/stream"
 latency: 200
 decoder: cpu
 width: 224

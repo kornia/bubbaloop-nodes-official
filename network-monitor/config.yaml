@@ -1,4 +1,5 @@
-# network-monitor node configuration
+# Instance parameters for network-monitor.
+# Run: pixi run run -c config.yaml
 
 # Topic to publish status to
 publish_topic: network-monitor/status

@@ -75,7 +75,7 @@ bubbaloop node init <name> -t python -d "Description" -o ./<name>
 
 Every node directory MUST contain:
 - `node.yaml` — manifest (name, version, type, description, author, build, command)
-- `config.yaml` — runtime configuration
+- Instance params file (e.g., `config.yaml`) — runtime parameters, passed to binary via `-c`
 - `pixi.toml` — build/run tasks and environment
 
 ### Topic Naming Convention
@@ -201,7 +201,7 @@ Before submitting a new node, verify ALL items:
 
 ### Structure
 - [ ] `node.yaml` exists with: name, version, type, description, author, build, command
-- [ ] `config.yaml` exists with: publish_topic, rate_hz, and node-specific fields
+- [ ] Instance params file exists (e.g., `config.yaml`) with: publish_topic, rate_hz, and node-specific fields
 - [ ] `pixi.toml` exists with: build and run tasks
 
 ### Communication

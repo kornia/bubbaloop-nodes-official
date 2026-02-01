@@ -43,6 +43,49 @@ All Zenoh paths are prefixed with `bubbaloop/` (e.g., `bubbaloop/local/jetson1/d
 
 **Full command set:** `start`, `stop`, `restart`, `build`, `clean`, `install`, `uninstall`, `enable_autostart`, `disable_autostart`, `remove`
 
+## Node Configuration (Two-Tier YAML)
+
+Each node uses two YAML files:
+
+| File | Purpose | Cardinality |
+|------|---------|-------------|
+| `node.yaml` | **Node manifest** -- identity and build/run commands | One per node type |
+| Instance params (e.g., `config.yaml`) | **Runtime parameters** -- URLs, topics, intervals | One per deployment instance |
+
+**`node.yaml`** declares the node type for the daemon (lives at the node root):
+
+```yaml
+name: rtsp-camera
+version: "0.1.0"
+description: "RTSP camera capture with H264 decode"
+type: rust
+build: "pixi run build"
+command: "./target/release/cameras_node"
+```
+
+**Instance params** control how a specific instance behaves (passed via `-c`):
+
+```yaml
+# rtsp-camera/configs/entrance.yaml
+name: entrance
+publish_topic: camera/entrance/compressed
+url: "rtsp://user:pass@host:554/stream"
+latency: 200
+decoder: cpu
+width: 224
+height: 224
+```
+
+The filename is not fixed -- each deployment can have multiple param files (e.g., `entrance.yaml`, `terrace.yaml`). The `configs/` directory contains examples.
+
+**`bubbaloop launch`** ties them together by creating a named instance from a node type + params file:
+
+```bash
+bubbaloop launch rtsp-camera my-launch.yaml --install --start
+```
+
+The launch YAML wraps instance params under a `config:` key with an instance `name:`. The daemon writes this to `~/.bubbaloop/configs/<instance-name>.yaml`.
+
 ## Topic Convention
 
 All topics follow a scoped hierarchy:
