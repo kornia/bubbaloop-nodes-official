@@ -1,0 +1,160 @@
+name: Release
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version tag (e.g., v0.1.0)'
+        required: true
+
+permissions:
+  contents: write
+  id-token: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    name: "Build ${{ matrix.node }} (${{ matrix.arch }})"
+    strategy:
+      fail-fast: false
+      matrix:
+        node:
+          - name: rtsp-camera
+            binary: rtsp_camera_node
+          - name: openmeteo
+            binary: openmeteo_node
+          - name: inference
+            binary: inference_node
+          - name: system-telemetry
+            binary: system_telemetry_node
+        arch:
+          - os: ubuntu-latest
+            arch: amd64
+          - os: ubuntu-24.04-arm
+            arch: arm64
+
+    runs-on: ${{ matrix.arch.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: prefix-dev/setup-pixi@v0.8.1
+        with:
+          manifest-path: ${{ matrix.node.name }}/pixi.toml
+          pixi-version: v0.39.0
+          cache: true
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: "${{ matrix.node.name }} -> target"
+
+      - name: Build
+        working-directory: ${{ matrix.node.name }}
+        run: pixi run build
+
+      - name: Strip binary
+        run: strip ${{ matrix.node.name }}/target/release/${{ matrix.node.binary }}
+
+      - name: Rename binary
+        run: |
+          mv ${{ matrix.node.name }}/target/release/${{ matrix.node.binary }} \
+             ${{ matrix.node.name }}-linux-${{ matrix.arch.arch }}
+
+      - name: Generate SHA256 checksum
+        run: |
+          sha256sum ${{ matrix.node.name }}-linux-${{ matrix.arch.arch }} \
+            > ${{ matrix.node.name }}-linux-${{ matrix.arch.arch }}.sha256
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.node.name }}-linux-${{ matrix.arch.arch }}
+          path: |
+            ${{ matrix.node.name }}-linux-${{ matrix.arch.arch }}
+            ${{ matrix.node.name }}-linux-${{ matrix.arch.arch }}.sha256
+
+  release:
+    name: Publish Release Assets
+    needs: [build]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Display downloaded artifacts
+        run: ls -la artifacts/*/
+
+      - name: Prepare release assets
+        run: |
+          mkdir -p release-assets
+          for dir in artifacts/*/; do
+            cp "$dir"* release-assets/ 2>/dev/null || true
+          done
+          ls -la release-assets/
+
+      - name: Determine version
+        id: version
+        run: |
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            echo "version=${{ github.event.inputs.version }}" >> $GITHUB_OUTPUT
+          elif [[ "${{ github.event_name }}" == "release" ]]; then
+            echo "version=${{ github.event.release.tag_name }}" >> $GITHUB_OUTPUT
+          else
+            echo "version=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Upload Release Assets
+        if: github.event_name == 'release'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.version.outputs.version }}
+          files: release-assets/*
+          append_body: true
+          body: |
+            ## Precompiled Node Binaries
+
+            Download the appropriate binary for your architecture:
+
+            | Node | x86_64 (amd64) | ARM64 (Jetson) |
+            |------|----------------|----------------|
+            | rtsp-camera | `rtsp-camera-linux-amd64` | `rtsp-camera-linux-arm64` |
+            | openmeteo | `openmeteo-linux-amd64` | `openmeteo-linux-arm64` |
+            | inference | `inference-linux-amd64` | `inference-linux-arm64` |
+            | system-telemetry | `system-telemetry-linux-amd64` | `system-telemetry-linux-arm64` |
+
+            Install with:
+            ```bash
+            bubbaloop node install <name>
+            ```
+
+      - name: Create Release
+        if: github.event_name == 'workflow_dispatch'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.version.outputs.version }}
+          name: Nodes ${{ steps.version.outputs.version }}
+          draft: false
+          prerelease: ${{ contains(steps.version.outputs.version, '-') }}
+          generate_release_notes: true
+          files: release-assets/*
+          body: |
+            ## Precompiled Node Binaries
+
+            Download the appropriate binary for your architecture:
+
+            | Node | x86_64 (amd64) | ARM64 (Jetson) |
+            |------|----------------|----------------|
+            | rtsp-camera | `rtsp-camera-linux-amd64` | `rtsp-camera-linux-arm64` |
+            | openmeteo | `openmeteo-linux-amd64` | `openmeteo-linux-arm64` |
+            | inference | `inference-linux-amd64` | `inference-linux-arm64` |
+            | system-telemetry | `system-telemetry-linux-amd64` | `system-telemetry-linux-arm64` |
+
+            Install with:
+            ```bash
+            bubbaloop node install <name>
+            ```
