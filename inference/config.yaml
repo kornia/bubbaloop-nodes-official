@@ -1,0 +1,5 @@
+# Instance parameters for inference.
+# Run: ./target/release/inference_node -c config.yaml
+
+# Topic pattern to subscribe to (wildcard for all cameras)
+subscribe_topic: camera/*/raw_shm

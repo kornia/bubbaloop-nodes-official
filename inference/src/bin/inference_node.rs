@@ -5,9 +5,62 @@
 //!
 //! Based on: https://github.com/eclipse-zenoh/zenoh/blob/main/examples/examples/z_sub_shm.rs
 
+use argh::FromArgs;
 use bubbaloop_schemas::RawImage;
 use prost::Message;
+use serde::Deserialize;
+use std::path::{Path, PathBuf};
 use zenoh::Wait;
+
+/// Inference node configuration
+#[derive(Debug, Clone, Deserialize)]
+struct Config {
+    /// Topic pattern to subscribe to
+    subscribe_topic: String,
+}
+
+impl Default for Config {
+    fn default() -> Self {
+        Self {
+            subscribe_topic: "camera/*/raw_shm".to_string(),
+        }
+    }
+}
+
+/// Inference node for camera stream processing (SHM subscriber)
+#[derive(FromArgs)]
+struct Args {
+    /// path to configuration file
+    #[argh(option, short = 'c', default = "default_config_path()")]
+    config: PathBuf,
+
+    /// zenoh endpoint to connect to
+    #[argh(option, short = 'e', default = "default_endpoint()")]
+    endpoint: String,
+}
+
+fn default_config_path() -> PathBuf {
+    PathBuf::from("config.yaml")
+}
+
+fn default_endpoint() -> String {
+    String::from("tcp/127.0.0.1:7447")
+}
+
+fn load_config(path: &Path) -> Config {
+    if path.exists() {
+        match std::fs::read_to_string(path) {
+            Ok(content) => match serde_yaml::from_str(&content) {
+                Ok(config) => return config,
+                Err(e) => log::warn!("Failed to parse config file: {}, using defaults", e),
+            },
+            Err(e) => log::warn!("Failed to read config file: {}, using defaults", e),
+        }
+    } else {
+        log::warn!("Config file not found: {:?}, using defaults", path);
+    }
+    Config::default()
+}
 
 /// Compute mean and standard deviation of pixel values
 fn compute_image_stats(data: &[u8]) -> (f64, f64) {
@@ -30,7 +83,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     zenoh::init_log_from_env_or("error");
     env_logger::init();
 
+    let args: Args = argh::from_env();
+
     log::info!("Starting inference node (SHM subscriber)...");
+
+    // Load and validate config
+    let config = load_config(&args.config);
+
+    let topic_re = regex_lite::Regex::new(r"^[a-zA-Z0-9/_\-\.\*]+$").unwrap();
+    if !topic_re.is_match(&config.subscribe_topic) {
+        log::error!(
+            "subscribe_topic '{}' contains invalid characters",
+            config.subscribe_topic
+        );
+        std::process::exit(1);
+    }
 
     // Read scope/machine env vars for health heartbeat
     let scope = std::env::var("BUBBALOOP_SCOPE").unwrap_or_else(|_| "local".to_string());
@@ -54,26 +121,30 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     }
 
     // Create Zenoh session with SHM enabled
-    let mut config = zenoh::Config::default();
-    config.insert_json5("transport/shared_memory/enabled", "true")?;
-    if let Ok(endpoint) = std::env::var("ZENOH_ENDPOINT") {
-        config.insert_json5("connect/endpoints", &format!(r#"["{}"]"#, endpoint))?;
-    }
+    let endpoint = std::env::var("ZENOH_ENDPOINT").unwrap_or(args.endpoint);
+    log::info!("Connecting to Zenoh at: {}", endpoint);
 
-    let session = zenoh::open(config).wait()?;
+    let mut zenoh_config = zenoh::Config::default();
+    zenoh_config.insert_json5("transport/shared_memory/enabled", "true")?;
+    zenoh_config.insert_json5("connect/endpoints", &format!(r#"["{}"]"#, endpoint))?;
+
+    let session = zenoh::open(zenoh_config).wait()?;
 
     // Create health heartbeat publisher
     let health_topic = format!("bubbaloop/{}/{}/health/inference", scope, machine_id);
     let health_publisher = session.declare_publisher(health_topic.clone()).await?;
     log::info!("Health heartbeat topic: {}", health_topic);
 
-    // Subscribe to all camera raw_shm topics using wildcard
-    let topic = "camera/*/raw_shm";
-    let subscriber = session.declare_subscriber(topic).wait()?;
+    // Subscribe using scoped topic
+    let full_topic = format!(
+        "bubbaloop/{}/{}/{}",
+        scope, machine_id, config.subscribe_topic
+    );
+    let subscriber = session.declare_subscriber(&full_topic).wait()?;
 
     log::info!(
         "Inference node subscribed to '{}', waiting for SHM images...",
-        topic
+        full_topic
     );
 
     let mut frame_count = 0u64;

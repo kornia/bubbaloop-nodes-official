@@ -13,8 +13,8 @@ struct Args {
 
     /// zenoh router endpoint to connect to
     /// Default: tcp/127.0.0.1:7447 (local zenohd router)
-    #[argh(option, short = 'z', default = "String::from(\"tcp/127.0.0.1:7447\")")]
-    zenoh_endpoint: String,
+    #[argh(option, short = 'e', default = "String::from(\"tcp/127.0.0.1:7447\")")]
+    endpoint: String,
 }
 
 #[tokio::main]
@@ -82,7 +82,7 @@ async fn main() -> ZResult<()> {
     log::info!("Scope: {}, Machine ID: {}", scope, machine_id);
 
     // Initialize ROS-Z context
-    let endpoint = std::env::var("ZENOH_ENDPOINT").unwrap_or(args.zenoh_endpoint);
+    let endpoint = std::env::var("ZENOH_ENDPOINT").unwrap_or(args.endpoint);
     log::info!("Connecting to Zenoh at: {}", endpoint);
     let ctx = Arc::new(
         ZContextBuilder::default()

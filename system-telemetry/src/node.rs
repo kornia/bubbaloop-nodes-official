@@ -98,6 +98,18 @@ impl SystemTelemetryNode {
             .await
             .map_err(|e| anyhow::anyhow!("Failed to open zenoh session: {}", e))?;
 
+        // Validate config
+        let topic_re = regex_lite::Regex::new(r"^[a-zA-Z0-9/_\-\.]+$").unwrap();
+        if !topic_re.is_match(&config.publish_topic) {
+            anyhow::bail!(
+                "publish_topic '{}' contains invalid characters (must match [a-zA-Z0-9/_\\-\\.]+)",
+                config.publish_topic
+            );
+        }
+        if config.rate_hz < 0.01 || config.rate_hz > 1000.0 {
+            anyhow::bail!("rate_hz {} out of range (0.01-1000.0)", config.rate_hz);
+        }
+
         let scope = std::env::var("BUBBALOOP_SCOPE").unwrap_or_else(|_| "local".to_string());
         let machine_id = std::env::var("BUBBALOOP_MACHINE_ID")
             .unwrap_or_else(|_| System::host_name().unwrap_or_else(|| "unknown".to_string()));

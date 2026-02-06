@@ -91,6 +91,43 @@ pub struct Config {
     pub fetch: FetchConfig,
 }
 
+impl FetchConfig {
+    /// Validate fetch config bounds
+    pub fn validate(&self) -> Result<(), ConfigError> {
+        if self.current_interval_secs == 0 || self.current_interval_secs > 86400 {
+            return Err(ConfigError::ValidationError(format!(
+                "current_interval_secs {} out of range (1-86400)",
+                self.current_interval_secs
+            )));
+        }
+        if self.hourly_interval_secs == 0 || self.hourly_interval_secs > 86400 {
+            return Err(ConfigError::ValidationError(format!(
+                "hourly_interval_secs {} out of range (1-86400)",
+                self.hourly_interval_secs
+            )));
+        }
+        if self.daily_interval_secs == 0 || self.daily_interval_secs > 86400 {
+            return Err(ConfigError::ValidationError(format!(
+                "daily_interval_secs {} out of range (1-86400)",
+                self.daily_interval_secs
+            )));
+        }
+        if self.hourly_forecast_hours == 0 || self.hourly_forecast_hours > 384 {
+            return Err(ConfigError::ValidationError(format!(
+                "hourly_forecast_hours {} out of range (1-384)",
+                self.hourly_forecast_hours
+            )));
+        }
+        if self.daily_forecast_days == 0 || self.daily_forecast_days > 16 {
+            return Err(ConfigError::ValidationError(format!(
+                "daily_forecast_days {} out of range (1-16)",
+                self.daily_forecast_days
+            )));
+        }
+        Ok(())
+    }
+}
+
 impl Config {
     /// Load configuration from a YAML file
     pub fn from_file(path: impl AsRef<Path>) -> Result<Self, ConfigError> {
@@ -101,7 +138,10 @@ impl Config {
 
     /// Parse configuration from a YAML string
     pub fn parse(yaml: &str) -> Result<Self, ConfigError> {
-        serde_yaml::from_str(yaml).map_err(|e| ConfigError::ParseError(e.to_string()))
+        let config: Config =
+            serde_yaml::from_str(yaml).map_err(|e| ConfigError::ParseError(e.to_string()))?;
+        config.fetch.validate()?;
+        Ok(config)
     }
 }
 
@@ -112,4 +152,6 @@ pub enum ConfigError {
     IoError(String),
     #[error("Parse error: {0}")]
     ParseError(String),
+    #[error("Validation error: {0}")]
+    ValidationError(String),
 }

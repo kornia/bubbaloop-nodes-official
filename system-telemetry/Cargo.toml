@@ -33,6 +33,9 @@ argh = "0.1"
 log = "0.4"
 env_logger = "0.11"
 
+# Validation
+regex-lite = "0.1"
+
 # Error handling
 anyhow = "1.0"
 
