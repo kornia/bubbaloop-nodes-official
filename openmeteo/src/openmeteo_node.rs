@@ -33,6 +33,7 @@ fn convert_current_weather(
     location_name: &str,
     sequence: u32,
     machine_id: &str,
+    scope: &str,
 ) -> CurrentWeather {
     let now = get_pub_time();
     CurrentWeather {
@@ -42,7 +43,7 @@ fn convert_current_weather(
             sequence,
             frame_id: location_name.to_string(),
             machine_id: machine_id.to_string(),
-            ..Default::default()
+            scope: scope.to_string(),
         }),
         latitude: response.latitude,
         longitude: response.longitude,
@@ -68,6 +69,7 @@ fn convert_hourly_forecast(
     location_name: &str,
     sequence: u32,
     machine_id: &str,
+    scope: &str,
 ) -> HourlyForecast {
     let now = get_pub_time();
     let entries: Vec<HourlyForecastEntry> = response
@@ -120,7 +122,7 @@ fn convert_hourly_forecast(
             sequence,
             frame_id: location_name.to_string(),
             machine_id: machine_id.to_string(),
-            ..Default::default()
+            scope: scope.to_string(),
         }),
         latitude: response.latitude,
         longitude: response.longitude,
@@ -167,6 +169,7 @@ fn convert_daily_forecast(
     location_name: &str,
     sequence: u32,
     machine_id: &str,
+    scope: &str,
 ) -> DailyForecast {
     let now = get_pub_time();
     let entries: Vec<DailyForecastEntry> = response
@@ -225,7 +228,7 @@ fn convert_daily_forecast(
             sequence,
             frame_id: location_name.to_string(),
             machine_id: machine_id.to_string(),
-            ..Default::default()
+            scope: scope.to_string(),
         }),
         latitude: response.latitude,
         longitude: response.longitude,
@@ -331,30 +334,30 @@ impl OpenMeteoNode {
         // Create ROS-Z node
         let node = Arc::new(self.ctx.create_node("weather").build()?);
 
-        // Create publishers with simple topic names
-        let current_topic = "/weather/current";
-        let hourly_topic = "/weather/hourly";
-        let daily_topic = "/weather/daily";
-        let config_topic = "/weather/config/location";
+        // Create publishers with scoped topic names
+        let current_topic = format!("bubbaloop/{}/{}/weather/current", scope, machine_id);
+        let hourly_topic = format!("bubbaloop/{}/{}/weather/hourly", scope, machine_id);
+        let daily_topic = format!("bubbaloop/{}/{}/weather/daily", scope, machine_id);
+        let config_topic = format!("bubbaloop/{}/{}/weather/config/location", scope, machine_id);
 
         let current_pub: ZPub<CurrentWeather, ProtobufSerdes<CurrentWeather>> = node
-            .create_pub::<CurrentWeather>(current_topic)
+            .create_pub::<CurrentWeather>(&current_topic)
             .with_serdes::<ProtobufSerdes<CurrentWeather>>()
             .build()?;
 
         let hourly_pub: ZPub<HourlyForecast, ProtobufSerdes<HourlyForecast>> = node
-            .create_pub::<HourlyForecast>(hourly_topic)
+            .create_pub::<HourlyForecast>(&hourly_topic)
             .with_serdes::<ProtobufSerdes<HourlyForecast>>()
             .build()?;
 
         let daily_pub: ZPub<DailyForecast, ProtobufSerdes<DailyForecast>> = node
-            .create_pub::<DailyForecast>(daily_topic)
+            .create_pub::<DailyForecast>(&daily_topic)
             .with_serdes::<ProtobufSerdes<DailyForecast>>()
             .build()?;
 
         // Create subscriber for location updates
         let location_sub = node
-            .create_sub::<LocationConfigProto>(config_topic)
+            .create_sub::<LocationConfigProto>(&config_topic)
             .with_serdes::<ProtobufSerdes<LocationConfigProto>>()
             .build()?;
 
@@ -470,7 +473,7 @@ impl OpenMeteoNode {
                     ).await {
                         Ok(response) => {
                             let temp = response.current.temperature_2m;
-                            let msg = convert_current_weather(response, &location_label, current_seq, &self.machine_id);
+                            let msg = convert_current_weather(response, &location_label, current_seq, &self.machine_id, &scope);
                             if current_pub.async_publish(&msg).await.is_ok() {
                                 log::info!("[{}] Current weather: {:.1}°C (seq={})", location_label, temp, current_seq);
                                 current_seq = current_seq.wrapping_add(1);
@@ -491,7 +494,7 @@ impl OpenMeteoNode {
                     ).await {
                         Ok(response) => {
                             let count = response.hourly.time.len();
-                            let msg = convert_hourly_forecast(response, &location_label, hourly_seq, &self.machine_id);
+                            let msg = convert_hourly_forecast(response, &location_label, hourly_seq, &self.machine_id, &scope);
                             if hourly_pub.async_publish(&msg).await.is_ok() {
                                 log::info!("[{}] Hourly forecast: {} entries (seq={})", location_label, count, hourly_seq);
                                 hourly_seq = hourly_seq.wrapping_add(1);
@@ -512,7 +515,7 @@ impl OpenMeteoNode {
                     ).await {
                         Ok(response) => {
                             let count = response.daily.time.len();
-                            let msg = convert_daily_forecast(response, &location_label, daily_seq, &self.machine_id);
+                            let msg = convert_daily_forecast(response, &location_label, daily_seq, &self.machine_id, &scope);
                             if daily_pub.async_publish(&msg).await.is_ok() {
                                 log::info!("[{}] Daily forecast: {} days (seq={})", location_label, count, daily_seq);
                                 daily_seq = daily_seq.wrapping_add(1);

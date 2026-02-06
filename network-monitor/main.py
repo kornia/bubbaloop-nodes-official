@@ -12,9 +12,14 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
+import re
+
 import requests
 import yaml
 import zenoh
+
+# Topic name validation pattern
+TOPIC_RE = re.compile(r"^[a-zA-Z0-9/_\-\.]+$")
 
 # Configure logging
 logging.basicConfig(
@@ -52,6 +57,20 @@ class NetworkMonitorNode:
                 "timeout_secs": 5,
                 "checks": [],
             }
+
+        # Validate config
+        topic = self.config.get("publish_topic", "")
+        if not TOPIC_RE.match(topic):
+            raise ValueError(
+                f"publish_topic '{topic}' contains invalid characters "
+                f"(must match [a-zA-Z0-9/_\\-\\.]+)"
+            )
+        rate_hz = self.config.get("rate_hz", 0.1)
+        if not (0.01 <= rate_hz <= 1000.0):
+            raise ValueError(f"rate_hz {rate_hz} out of range (0.01-1000.0)")
+        timeout_secs = self.config.get("timeout_secs", 5)
+        if not (1 <= timeout_secs <= 300):
+            raise ValueError(f"timeout_secs {timeout_secs} out of range (1-300)")
 
         # Resolve scope and machine_id from env vars
         import os
@@ -277,8 +296,8 @@ def main():
         "-e",
         "--endpoint",
         type=str,
-        default=None,
-        help="Zenoh endpoint to connect to",
+        default="tcp/127.0.0.1:7447",
+        help="Zenoh endpoint to connect to (default: tcp/127.0.0.1:7447)",
     )
     args = parser.parse_args()
 
