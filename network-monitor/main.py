@@ -99,6 +99,21 @@ class NetworkMonitorNode:
             f"bubbaloop/{self.scope}/{self.machine_id}/health/network-monitor"
         )
 
+        # Declare schema queryable so dashboard/tools can discover this node's protobuf schemas
+        descriptor_path = Path(__file__).parent / "descriptor.bin"
+        if descriptor_path.exists():
+            self.descriptor_bytes = descriptor_path.read_bytes()
+            schema_key = f"bubbaloop/{self.scope}/{self.machine_id}/network-monitor/schema"
+            self.schema_queryable = self.session.declare_queryable(
+                schema_key,
+                lambda query: query.reply(query.key_expr, self.descriptor_bytes),
+            )
+            logger.info(f"Schema queryable: {schema_key}")
+        else:
+            self.descriptor_bytes = None
+            self.schema_queryable = None
+            logger.warning("descriptor.bin not found, schema queryable not available")
+
         self.hostname = socket.gethostname()
         self.running = True
         self.sequence = 0
@@ -278,6 +293,8 @@ class NetworkMonitorNode:
         """Clean up resources."""
         self.publisher.undeclare()
         self.health_publisher.undeclare()
+        if self.schema_queryable is not None:
+            self.schema_queryable.undeclare()
         self.session.close()
 
 
