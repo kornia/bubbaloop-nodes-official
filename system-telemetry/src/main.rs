@@ -56,6 +56,7 @@ async fn main() -> Result<()> {
     log::info!("Connecting to Zenoh at: {}", endpoint);
     let ctx = Arc::new(
         ZContextBuilder::default()
+            .with_json("mode", json!("client"))
             .with_json("connect/endpoints", json!([endpoint]))
             .build()
             .map_err(|e| anyhow::anyhow!("Failed to create ROS-Z context: {}", e))?,

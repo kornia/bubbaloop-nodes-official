@@ -1,0 +1,72 @@
+syntax = "proto3";
+
+package bubbaloop.weather.v1;
+
+import "header.proto";
+
+message CurrentWeather {
+    bubbaloop.header.v1.Header header = 1;
+    double latitude = 2;
+    double longitude = 3;
+    string timezone = 4;
+    double temperature_2m = 5;
+    double relative_humidity_2m = 6;
+    double apparent_temperature = 7;
+    double precipitation = 8;
+    double rain = 9;
+    double wind_speed_10m = 10;
+    double wind_direction_10m = 11;
+    double wind_gusts_10m = 12;
+    uint32 weather_code = 13;
+    double cloud_cover = 14;
+    double pressure_msl = 15;
+    double surface_pressure = 16;
+    uint32 is_day = 17;
+}
+
+message HourlyForecastEntry {
+    uint64 time = 1;
+    double temperature_2m = 2;
+    double relative_humidity_2m = 3;
+    double precipitation_probability = 4;
+    double precipitation = 5;
+    uint32 weather_code = 6;
+    double wind_speed_10m = 7;
+    double wind_direction_10m = 8;
+    double cloud_cover = 9;
+}
+
+message HourlyForecast {
+    bubbaloop.header.v1.Header header = 1;
+    double latitude = 2;
+    double longitude = 3;
+    string timezone = 4;
+    repeated HourlyForecastEntry entries = 5;
+}
+
+message DailyForecastEntry {
+    uint64 time = 1;
+    double temperature_2m_max = 2;
+    double temperature_2m_min = 3;
+    double precipitation_sum = 4;
+    double precipitation_probability_max = 5;
+    uint32 weather_code = 6;
+    double wind_speed_10m_max = 7;
+    double wind_gusts_10m_max = 8;
+    string sunrise = 9;
+    string sunset = 10;
+}
+
+message DailyForecast {
+    bubbaloop.header.v1.Header header = 1;
+    double latitude = 2;
+    double longitude = 3;
+    string timezone = 4;
+    repeated DailyForecastEntry entries = 5;
+}
+
+message LocationConfig {
+    double latitude = 1;
+    double longitude = 2;
+    string timezone = 3;
+}

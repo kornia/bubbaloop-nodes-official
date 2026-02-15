@@ -14,6 +14,9 @@ use bubbaloop_schemas::{
     CpuMetrics, DiskMetrics, LoadMetrics, MemoryMetrics, NetworkMetrics, SystemMetrics,
 };
 
+/// Compiled protobuf descriptor for schema queries
+pub const DESCRIPTOR: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/descriptor.bin"));
+
 /// Which metrics to collect
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CollectConfig {
@@ -57,7 +60,7 @@ pub struct Config {
 impl Default for Config {
     fn default() -> Self {
         Self {
-            publish_topic: "system-telemetry/metrics".to_string(),
+            publish_topic: "system_telemetry/metrics".to_string(),
             rate_hz: 1.0,
             collect: CollectConfig::default(),
         }
@@ -92,6 +95,9 @@ impl SystemTelemetryNode {
         // Create a vanilla zenoh session for the health heartbeat
         let mut zenoh_config = zenoh::Config::default();
         zenoh_config
+            .insert_json5("mode", r#""client""#)
+            .unwrap();
+        zenoh_config
             .insert_json5("connect/endpoints", &format!(r#"["{}"]"#, endpoint))
             .unwrap();
         let zenoh_session = zenoh::open(zenoh_config)
@@ -112,7 +118,8 @@ impl SystemTelemetryNode {
 
         let scope = std::env::var("BUBBALOOP_SCOPE").unwrap_or_else(|_| "local".to_string());
         let machine_id = std::env::var("BUBBALOOP_MACHINE_ID")
-            .unwrap_or_else(|_| System::host_name().unwrap_or_else(|| "unknown".to_string()));
+            .unwrap_or_else(|_| System::host_name().unwrap_or_else(|| "unknown".to_string()))
+            .replace('-', "_");
 
         let full_topic = format!("bubbaloop/{}/{}/{}", scope, machine_id, config.publish_topic);
         log::info!("Publishing to: {}", full_topic);
@@ -174,6 +181,28 @@ impl SystemTelemetryNode {
             .declare_publisher(&health_topic)
             .await
             .map_err(|e| anyhow::anyhow!("Failed to create health publisher: {}", e))?;
+
+        // Schema queryable for dashboard discovery
+        // Use underscores to match the data topic prefix (ros-z rejects hyphens)
+        let schema_key = format!(
+            "bubbaloop/{}/{}/system_telemetry/schema",
+            self.scope, self.machine_id
+        );
+        let _schema_queryable = self
+            .zenoh_session
+            .declare_queryable(&schema_key)
+            .callback(|query| {
+                use zenoh::Wait;
+                if let Err(e) = query
+                    .reply(query.key_expr().clone(), zenoh::bytes::ZBytes::from(DESCRIPTOR.to_vec()))
+                    .wait()
+                {
+                    log::warn!("Failed to reply to schema query: {}", e);
+                }
+            })
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to create schema queryable: {}", e))?;
+        log::info!("Schema queryable: {}", schema_key);
 
         let interval = std::time::Duration::from_secs_f64(1.0 / self.config.rate_hz);
         let mut sequence: u32 = 0;

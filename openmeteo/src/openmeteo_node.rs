@@ -3,7 +3,7 @@ use crate::api::{
     OpenMeteoClient,
 };
 use crate::config::{FetchConfig, LocationConfig};
-use bubbaloop_schemas::{
+use crate::proto::{
     CurrentWeather, DailyForecast, DailyForecastEntry, Header, HourlyForecast, HourlyForecastEntry,
     LocationConfig as LocationConfigProto,
 };
@@ -11,6 +11,9 @@ use ros_z::{context::ZContext, msg::ProtobufSerdes, pubsub::ZPub, Builder, Resul
 use std::sync::Arc;
 use tokio::sync::mpsc;
 use tokio::time::{interval, Duration};
+
+/// Compiled protobuf descriptor for schema queries
+pub const DESCRIPTOR: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/descriptor.bin"));
 
 /// Resolved location with coordinates
 #[derive(Debug, Clone)]
@@ -330,6 +333,31 @@ impl OpenMeteoNode {
                 ))
             })?;
         log::info!("Health heartbeat topic: {}", health_topic);
+
+        // Schema queryable for dashboard discovery
+        let schema_key = format!("bubbaloop/{}/{}/openmeteo/schema", scope, machine_id);
+        let _schema_queryable = zenoh_session
+            .declare_queryable(&schema_key)
+            .callback(|query| {
+                use zenoh::Wait;
+                if let Err(e) = query
+                    .reply(
+                        query.key_expr().clone(),
+                        zenoh::bytes::ZBytes::from(DESCRIPTOR.to_vec()),
+                    )
+                    .wait()
+                {
+                    log::warn!("Failed to reply to schema query: {}", e);
+                }
+            })
+            .await
+            .map_err(|e| {
+                Box::<dyn std::error::Error + Send + Sync>::from(format!(
+                    "Schema queryable error: {}",
+                    e
+                ))
+            })?;
+        log::info!("Schema queryable: {}", schema_key);
 
         // Create ROS-Z node
         let node = Arc::new(self.ctx.create_node("weather").build()?);

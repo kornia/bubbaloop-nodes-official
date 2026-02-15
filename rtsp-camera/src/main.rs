@@ -67,6 +67,7 @@ async fn main() -> anyhow::Result<()> {
     log::info!("Connecting to Zenoh at: {}", endpoint);
     let ctx = Arc::new(
         ZContextBuilder::default()
+            .with_json("mode", json!("client"))
             .with_json("connect/endpoints", json!([endpoint]))
             .build()
             .map_err(|e| anyhow::anyhow!("Failed to create ROS-Z context: {}", e))?,
@@ -86,6 +87,7 @@ async fn main() -> anyhow::Result<()> {
     // Create vanilla zenoh session for health heartbeat
     let zenoh_session = {
         let mut c = zenoh::Config::default();
+        c.insert_json5("mode", r#""client""#).unwrap();
         c.insert_json5("connect/endpoints", &format!(r#"["{}"]"#, endpoint))
             .unwrap();
         Arc::new(zenoh::open(c).await.map_err(|e| {

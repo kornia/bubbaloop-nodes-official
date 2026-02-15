@@ -2,7 +2,7 @@
 # Run: ./target/release/system_telemetry_node -c config.yaml
 
 # Topic to publish metrics to
-publish_topic: system-telemetry/metrics
+publish_topic: system_telemetry/metrics
 
 # Publishing rate in Hz
 rate_hz: 1.0

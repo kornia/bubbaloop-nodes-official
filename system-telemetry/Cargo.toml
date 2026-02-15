@@ -45,4 +45,7 @@ ctrlc = "3.4"
 # Time utilities
 chrono = { version = "0.4", features = ["serde"] }
 
+[build-dependencies]
+prost-build = "0.14"
+
 [workspace]

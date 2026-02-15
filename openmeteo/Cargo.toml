@@ -23,10 +23,14 @@ serde_yaml = "0.9"
 thiserror = "2.0"
 hostname = "0.4"
 regex-lite = "0.1"
-bubbaloop-schemas = { git = "https://github.com/kornia/bubbaloop.git", branch = "main", features = ["ros-z"] }
+# Weather proto types are now generated locally from protos/ via build.rs
+# bubbaloop-schemas = { git = "https://github.com/kornia/bubbaloop.git", branch = "main", features = ["ros-z"] }
 
 [[bin]]
 name = "openmeteo_node"
 path = "src/bin/openmeteo_node.rs"
+
+[build-dependencies]
+prost-build = "0.14"
 
 [workspace]

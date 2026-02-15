@@ -81,6 +81,7 @@ class NetworkMonitorNode:
 
         # Setup zenoh
         zenoh_config = zenoh.Config()
+        zenoh_config.insert_json5('mode', '"client"')
         if endpoint:
             zenoh_config.insert_json5("connect/endpoints", json.dumps([endpoint]))
 
