@@ -9,11 +9,9 @@ name = "system_telemetry_node"
 path = "src/main.rs"
 
 [dependencies]
-# Shared protobuf schemas (with ros-z trait impls)
-bubbaloop-schemas = { git = "https://github.com/kornia/bubbaloop.git", branch = "main", features = ["ros-z"] }
+# Shared protobuf schemas
+bubbaloop-schemas = { git = "https://github.com/kornia/bubbaloop.git", branch = "main" }
 
-# ROS-Z pub/sub (wraps zenoh with typed publishers)
-ros-z = { git = "https://github.com/ZettaScaleLabs/ros-z.git", branch = "main", features = ["protobuf"] }
 zenoh = "1.7.2"
 
 # System information
@@ -44,5 +42,8 @@ ctrlc = "3.4"
 
 # Time utilities
 chrono = { version = "0.4", features = ["serde"] }
+
+[build-dependencies]
+prost-build = "0.14"
 
 [workspace]

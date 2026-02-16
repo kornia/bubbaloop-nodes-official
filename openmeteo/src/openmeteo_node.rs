@@ -3,11 +3,12 @@ use crate::api::{
     OpenMeteoClient,
 };
 use crate::config::{FetchConfig, LocationConfig};
-use bubbaloop_schemas::{
-    CurrentWeather, DailyForecast, DailyForecastEntry, Header, HourlyForecast, HourlyForecastEntry,
+use bubbaloop_schemas::Header;
+use crate::proto::{
+    CurrentWeather, DailyForecast, DailyForecastEntry, HourlyForecast, HourlyForecastEntry,
     LocationConfig as LocationConfigProto,
 };
-use ros_z::{context::ZContext, msg::ProtobufSerdes, pubsub::ZPub, Builder, Result as ZResult};
+use prost::Message;
 use std::sync::Arc;
 use tokio::sync::mpsc;
 use tokio::time::{interval, Duration};
@@ -279,7 +280,7 @@ pub async fn resolve_location(config: &LocationConfig) -> Result<ResolvedLocatio
 
 /// Open-Meteo weather node
 pub struct OpenMeteoNode {
-    ctx: Arc<ZContext>,
+    session: Arc<zenoh::Session>,
     location: ResolvedLocation,
     fetch_config: FetchConfig,
     client: OpenMeteoClient,
@@ -288,13 +289,13 @@ pub struct OpenMeteoNode {
 
 impl OpenMeteoNode {
     pub fn new(
-        ctx: Arc<ZContext>,
+        session: Arc<zenoh::Session>,
         location: ResolvedLocation,
         fetch_config: FetchConfig,
         machine_id: String,
-    ) -> ZResult<Self> {
+    ) -> anyhow::Result<Self> {
         Ok(Self {
-            ctx,
+            session,
             location,
             fetch_config,
             client: OpenMeteoClient::new(),
@@ -305,10 +306,10 @@ impl OpenMeteoNode {
     pub async fn run(
         self,
         shutdown_tx: tokio::sync::watch::Sender<()>,
-        zenoh_session: zenoh::Session,
+        zenoh_session: Arc<zenoh::Session>,
         scope: String,
         machine_id: String,
-    ) -> ZResult<()> {
+    ) -> anyhow::Result<()> {
         let mut shutdown_rx = shutdown_tx.subscribe();
 
         // Mutable location that can be updated via Zenoh
@@ -323,43 +324,39 @@ impl OpenMeteoNode {
         let health_publisher = zenoh_session
             .declare_publisher(health_topic.clone())
             .await
-            .map_err(|e| {
-                Box::<dyn std::error::Error + Send + Sync>::from(format!(
-                    "Health publisher error: {}",
-                    e
-                ))
-            })?;
+            .map_err(|e| anyhow::anyhow!("Health publisher error: {}", e))?;
         log::info!("Health heartbeat topic: {}", health_topic);
 
-        // Create ROS-Z node
-        let node = Arc::new(self.ctx.create_node("weather").build()?);
-
-        // Create publishers with scoped topic names
+        // Create Zenoh publishers with scoped topic names
         let current_topic = format!("bubbaloop/{}/{}/weather/current", scope, machine_id);
         let hourly_topic = format!("bubbaloop/{}/{}/weather/hourly", scope, machine_id);
         let daily_topic = format!("bubbaloop/{}/{}/weather/daily", scope, machine_id);
         let config_topic = format!("bubbaloop/{}/{}/weather/config/location", scope, machine_id);
 
-        let current_pub: ZPub<CurrentWeather, ProtobufSerdes<CurrentWeather>> = node
-            .create_pub::<CurrentWeather>(&current_topic)
-            .with_serdes::<ProtobufSerdes<CurrentWeather>>()
-            .build()?;
+        let current_pub = self
+            .session
+            .declare_publisher(&current_topic)
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to create current publisher: {}", e))?;
 
-        let hourly_pub: ZPub<HourlyForecast, ProtobufSerdes<HourlyForecast>> = node
-            .create_pub::<HourlyForecast>(&hourly_topic)
-            .with_serdes::<ProtobufSerdes<HourlyForecast>>()
-            .build()?;
+        let hourly_pub = self
+            .session
+            .declare_publisher(&hourly_topic)
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to create hourly publisher: {}", e))?;
 
-        let daily_pub: ZPub<DailyForecast, ProtobufSerdes<DailyForecast>> = node
-            .create_pub::<DailyForecast>(&daily_topic)
-            .with_serdes::<ProtobufSerdes<DailyForecast>>()
-            .build()?;
+        let daily_pub = self
+            .session
+            .declare_publisher(&daily_topic)
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to create daily publisher: {}", e))?;
 
         // Create subscriber for location updates
-        let location_sub = node
-            .create_sub::<LocationConfigProto>(&config_topic)
-            .with_serdes::<ProtobufSerdes<LocationConfigProto>>()
-            .build()?;
+        let location_sub = self
+            .session
+            .declare_subscriber(&config_topic)
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to create location subscriber: {}", e))?;
 
         // Channel for location updates from subscriber task
         let (location_tx, mut location_rx) = mpsc::channel::<LocationConfigProto>(10);
@@ -370,12 +367,19 @@ impl OpenMeteoNode {
             loop {
                 tokio::select! {
                     _ = shutdown_rx_loc.changed() => break,
-                    result = location_sub.async_recv() => {
+                    result = location_sub.recv_async() => {
                         match result {
-                            Ok(config) => {
-                                if let Err(e) = location_tx.send(config).await {
-                                    log::error!("Failed to send location update: {}", e);
-                                    break;
+                            Ok(sample) => {
+                                match LocationConfigProto::decode(sample.payload().to_bytes().as_ref()) {
+                                    Ok(config) => {
+                                        if let Err(e) = location_tx.send(config).await {
+                                            log::error!("Failed to send location update: {}", e);
+                                            break;
+                                        }
+                                    }
+                                    Err(e) => {
+                                        log::warn!("Error decoding location config: {}", e);
+                                    }
                                 }
                             }
                             Err(e) => {
@@ -474,8 +478,8 @@ impl OpenMeteoNode {
                         Ok(response) => {
                             let temp = response.current.temperature_2m;
                             let msg = convert_current_weather(response, &location_label, current_seq, &self.machine_id, &scope);
-                            if current_pub.async_publish(&msg).await.is_ok() {
-                                log::info!("[{}] Current weather: {:.1}°C (seq={})", location_label, temp, current_seq);
+                            if current_pub.put(msg.encode_to_vec()).await.is_ok() {
+                                log::info!("[{}] Current weather: {:.1}C (seq={})", location_label, temp, current_seq);
                                 current_seq = current_seq.wrapping_add(1);
                             }
                         }
@@ -495,7 +499,7 @@ impl OpenMeteoNode {
                         Ok(response) => {
                             let count = response.hourly.time.len();
                             let msg = convert_hourly_forecast(response, &location_label, hourly_seq, &self.machine_id, &scope);
-                            if hourly_pub.async_publish(&msg).await.is_ok() {
+                            if hourly_pub.put(msg.encode_to_vec()).await.is_ok() {
                                 log::info!("[{}] Hourly forecast: {} entries (seq={})", location_label, count, hourly_seq);
                                 hourly_seq = hourly_seq.wrapping_add(1);
                             }
@@ -516,7 +520,7 @@ impl OpenMeteoNode {
                         Ok(response) => {
                             let count = response.daily.time.len();
                             let msg = convert_daily_forecast(response, &location_label, daily_seq, &self.machine_id, &scope);
-                            if daily_pub.async_publish(&msg).await.is_ok() {
+                            if daily_pub.put(msg.encode_to_vec()).await.is_ok() {
                                 log::info!("[{}] Daily forecast: {} days (seq={})", location_label, count, daily_seq);
                                 daily_seq = daily_seq.wrapping_add(1);
                             }

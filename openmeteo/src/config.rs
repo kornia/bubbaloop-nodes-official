@@ -155,3 +155,97 @@ pub enum ConfigError {
     #[error("Validation error: {0}")]
     ValidationError(String),
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_parse_defaults() {
+        let yaml = "";
+        let config = Config::parse(yaml).unwrap();
+        assert_eq!(config.fetch.current_interval_secs, 30);
+        assert_eq!(config.fetch.hourly_interval_secs, 1800);
+        assert_eq!(config.fetch.daily_interval_secs, 10800);
+        assert_eq!(config.fetch.hourly_forecast_hours, 48);
+        assert_eq!(config.fetch.daily_forecast_days, 7);
+        assert!(config.location.auto_discover);
+    }
+
+    #[test]
+    fn test_parse_custom_values() {
+        let yaml = r#"
+fetch:
+  current_interval_secs: 120
+  hourly_forecast_hours: 72
+  daily_forecast_days: 14
+"#;
+        let config = Config::parse(yaml).unwrap();
+        assert_eq!(config.fetch.current_interval_secs, 120);
+        assert_eq!(config.fetch.hourly_forecast_hours, 72);
+        assert_eq!(config.fetch.daily_forecast_days, 14);
+    }
+
+    #[test]
+    fn test_parse_location() {
+        let yaml = r#"
+location:
+  latitude: 48.8566
+  longitude: 2.3522
+  timezone: "Europe/Paris"
+  auto_discover: false
+"#;
+        let config = Config::parse(yaml).unwrap();
+        assert!(!config.location.auto_discover);
+        assert_eq!(config.location.latitude, Some(48.8566));
+        assert_eq!(config.location.longitude, Some(2.3522));
+    }
+
+    #[test]
+    fn test_validate_current_interval_zero() {
+        let fetch = FetchConfig {
+            current_interval_secs: 0,
+            ..Default::default()
+        };
+        assert!(fetch.validate().is_err());
+    }
+
+    #[test]
+    fn test_validate_current_interval_too_high() {
+        let fetch = FetchConfig {
+            current_interval_secs: 86401,
+            ..Default::default()
+        };
+        assert!(fetch.validate().is_err());
+    }
+
+    #[test]
+    fn test_validate_hourly_forecast_too_high() {
+        let fetch = FetchConfig {
+            hourly_forecast_hours: 385,
+            ..Default::default()
+        };
+        assert!(fetch.validate().is_err());
+    }
+
+    #[test]
+    fn test_validate_daily_forecast_too_high() {
+        let fetch = FetchConfig {
+            daily_forecast_days: 17,
+            ..Default::default()
+        };
+        assert!(fetch.validate().is_err());
+    }
+
+    #[test]
+    fn test_validate_all_bounds_ok() {
+        let fetch = FetchConfig {
+            current_interval_secs: 1,
+            hourly_interval_secs: 86400,
+            daily_interval_secs: 1,
+            hourly_forecast_hours: 384,
+            daily_forecast_days: 16,
+        };
+        assert!(fetch.validate().is_ok());
+    }
+}

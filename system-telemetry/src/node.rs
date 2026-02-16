@@ -1,18 +1,13 @@
 //! system-telemetry node implementation
 
 use anyhow::{Context, Result};
-use ros_z::context::ZContext;
-use ros_z::msg::ProtobufSerdes;
-use ros_z::pubsub::ZPub;
-use ros_z::Builder;
+use prost::Message;
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 use std::sync::Arc;
 use sysinfo::{Disks, Networks, System};
 
-use bubbaloop_schemas::{
-    CpuMetrics, DiskMetrics, LoadMetrics, MemoryMetrics, NetworkMetrics, SystemMetrics,
-};
+use super::proto::{CpuMetrics, DiskMetrics, LoadMetrics, MemoryMetrics, NetworkMetrics, SystemMetrics};
 
 /// Which metrics to collect
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -64,11 +59,35 @@ impl Default for Config {
     }
 }
 
+impl Config {
+    /// Parse configuration from a YAML string
+    pub fn parse(yaml: &str) -> Result<Self> {
+        let config: Config =
+            serde_yaml::from_str(yaml).context("Failed to parse config")?;
+        config.validate()?;
+        Ok(config)
+    }
+
+    /// Validate configuration values
+    pub fn validate(&self) -> Result<()> {
+        let topic_re = regex_lite::Regex::new(r"^[a-zA-Z0-9/_\-\.]+$").unwrap();
+        if !topic_re.is_match(&self.publish_topic) {
+            anyhow::bail!(
+                "publish_topic '{}' contains invalid characters (must match [a-zA-Z0-9/_\\-\\.]+)",
+                self.publish_topic
+            );
+        }
+        if self.rate_hz < 0.01 || self.rate_hz > 1000.0 {
+            anyhow::bail!("rate_hz {} out of range (0.01-1000.0)", self.rate_hz);
+        }
+        Ok(())
+    }
+}
+
 /// SystemTelemetry node
 pub struct SystemTelemetryNode {
     config: Config,
-    ctx: Arc<ZContext>,
-    zenoh_session: zenoh::Session,
+    session: Arc<zenoh::Session>,
     system: System,
     disks: Disks,
     networks: Networks,
@@ -78,7 +97,7 @@ pub struct SystemTelemetryNode {
 
 impl SystemTelemetryNode {
     /// Create a new node instance
-    pub async fn new(ctx: Arc<ZContext>, config_path: &Path, endpoint: &str) -> Result<Self> {
+    pub async fn new(session: Arc<zenoh::Session>, config_path: &Path) -> Result<Self> {
         // Load configuration
         let config = if config_path.exists() {
             let content =
@@ -89,32 +108,17 @@ impl SystemTelemetryNode {
             Config::default()
         };
 
-        // Create a vanilla zenoh session for the health heartbeat
-        let mut zenoh_config = zenoh::Config::default();
-        zenoh_config
-            .insert_json5("connect/endpoints", &format!(r#"["{}"]"#, endpoint))
-            .unwrap();
-        let zenoh_session = zenoh::open(zenoh_config)
-            .await
-            .map_err(|e| anyhow::anyhow!("Failed to open zenoh session: {}", e))?;
-
         // Validate config
-        let topic_re = regex_lite::Regex::new(r"^[a-zA-Z0-9/_\-\.]+$").unwrap();
-        if !topic_re.is_match(&config.publish_topic) {
-            anyhow::bail!(
-                "publish_topic '{}' contains invalid characters (must match [a-zA-Z0-9/_\\-\\.]+)",
-                config.publish_topic
-            );
-        }
-        if config.rate_hz < 0.01 || config.rate_hz > 1000.0 {
-            anyhow::bail!("rate_hz {} out of range (0.01-1000.0)", config.rate_hz);
-        }
+        config.validate()?;
 
         let scope = std::env::var("BUBBALOOP_SCOPE").unwrap_or_else(|_| "local".to_string());
         let machine_id = std::env::var("BUBBALOOP_MACHINE_ID")
-            .unwrap_or_else(|_| System::host_name().unwrap_or_else(|| "unknown".to_string()));
+            .unwrap_or_else(|_| System::host_name().unwrap_or_else(|| "unknown".to_string()))
+            .replace('-', "_");
 
-        let full_topic = format!("bubbaloop/{}/{}/{}", scope, machine_id, config.publish_topic);
+        // Hyphens in topics can cause issues — sanitize
+        let full_topic = format!("bubbaloop/{}/{}/{}", scope, machine_id, config.publish_topic)
+            .replace('-', "_");
         log::info!("Publishing to: {}", full_topic);
 
         let mut system = System::new();
@@ -131,8 +135,7 @@ impl SystemTelemetryNode {
 
         Ok(Self {
             config,
-            ctx,
-            zenoh_session,
+            session,
             system,
             disks,
             networks,
@@ -146,34 +149,48 @@ impl SystemTelemetryNode {
         let mut shutdown_rx = shutdown_tx.subscribe();
 
         // Build scoped topic: bubbaloop/{scope}/{machine_id}/{publish_topic}
+        // Hyphens in topics can cause issues — sanitize
         let full_topic = format!(
             "bubbaloop/{}/{}/{}",
             self.scope, self.machine_id, self.config.publish_topic
-        );
+        )
+        .replace('-', "_");
 
-        // Create ros-z node and typed publisher
-        let node = self
-            .ctx
-            .create_node("system_telemetry")
-            .build()
-            .map_err(|e| anyhow::anyhow!("Failed to create ros-z node: {}", e))?;
-
-        let metrics_pub: ZPub<SystemMetrics, ProtobufSerdes<SystemMetrics>> = node
-            .create_pub::<SystemMetrics>(&full_topic)
-            .with_serdes::<ProtobufSerdes<SystemMetrics>>()
-            .build()
+        // Create vanilla Zenoh publisher
+        let metrics_pub = self
+            .session
+            .declare_publisher(&full_topic)
+            .await
             .map_err(|e| anyhow::anyhow!("Failed to create metrics publisher: {}", e))?;
 
-        // Health heartbeat via vanilla zenoh (simple string, not protobuf)
+        // Health heartbeat publisher
         let health_topic = format!(
             "bubbaloop/{}/{}/health/system-telemetry",
             self.scope, self.machine_id
         );
         let health_publisher = self
-            .zenoh_session
+            .session
             .declare_publisher(&health_topic)
             .await
             .map_err(|e| anyhow::anyhow!("Failed to create health publisher: {}", e))?;
+
+        // Declare schema queryable so dashboard/tools can discover this node's protobuf schemas
+        let schema_key = format!(
+            "bubbaloop/{}/{}/system-telemetry/schema",
+            self.scope, self.machine_id
+        );
+        let _schema_queryable = self
+            .session
+            .declare_queryable(&schema_key)
+            .callback({
+                let descriptor = super::DESCRIPTOR.to_vec();
+                move |query| {
+                    let _ = query.reply(&query.key_expr().clone(), descriptor.as_slice());
+                }
+            })
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to create schema queryable: {}", e))?;
+        log::info!("Schema queryable: {}", schema_key);
 
         let interval = std::time::Duration::from_secs_f64(1.0 / self.config.rate_hz);
         let mut sequence: u32 = 0;
@@ -209,7 +226,7 @@ impl SystemTelemetryNode {
                         );
                     }
 
-                    if let Err(e) = metrics_pub.async_publish(&metrics).await {
+                    if let Err(e) = metrics_pub.put(metrics.encode_to_vec()).await {
                         log::warn!("Failed to publish metrics: {}", e);
                     }
 
@@ -342,5 +359,79 @@ impl SystemTelemetryNode {
             load,
             uptime_secs: System::uptime(),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_parse_defaults() {
+        let config = Config::parse("publish_topic: system-telemetry/metrics\nrate_hz: 1.0").unwrap();
+        assert_eq!(config.publish_topic, "system-telemetry/metrics");
+        assert_eq!(config.rate_hz, 1.0);
+        assert!(config.collect.cpu);
+        assert!(config.collect.memory);
+    }
+
+    #[test]
+    fn test_parse_custom_collect() {
+        let yaml = r#"
+publish_topic: system-telemetry/metrics
+rate_hz: 0.5
+collect:
+  cpu: true
+  memory: true
+  disk: false
+  network: false
+  load: false
+"#;
+        let config = Config::parse(yaml).unwrap();
+        assert_eq!(config.rate_hz, 0.5);
+        assert!(!config.collect.disk);
+        assert!(!config.collect.network);
+    }
+
+    #[test]
+    fn test_validate_invalid_topic() {
+        let config = Config {
+            publish_topic: "bad topic!".to_string(),
+            ..Default::default()
+        };
+        assert!(config.validate().is_err());
+    }
+
+    #[test]
+    fn test_validate_rate_too_low() {
+        let config = Config {
+            rate_hz: 0.001,
+            ..Default::default()
+        };
+        assert!(config.validate().is_err());
+    }
+
+    #[test]
+    fn test_validate_rate_too_high() {
+        let config = Config {
+            rate_hz: 1001.0,
+            ..Default::default()
+        };
+        assert!(config.validate().is_err());
+    }
+
+    #[test]
+    fn test_validate_ok() {
+        let config = Config::default();
+        assert!(config.validate().is_ok());
+    }
+
+    #[test]
+    fn test_validate_topic_with_slashes() {
+        let config = Config {
+            publish_topic: "my-node/sub/topic".to_string(),
+            ..Default::default()
+        };
+        assert!(config.validate().is_ok());
     }
 }
