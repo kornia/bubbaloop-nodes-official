@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
-"""Compile protobuf definitions from bubbaloop-schemas into Python modules."""
+"""Compile protobuf definitions from local protos/ directory into Python modules and descriptor."""
 
 import subprocess
 import sys
 from pathlib import Path
 
-PROTO_DIR = Path(__file__).parent.parent.parent / "bubbaloop" / "crates" / "bubbaloop-schemas" / "protos"
-OUTPUT_DIR = Path(__file__).parent
+SCRIPT_DIR = Path(__file__).parent.resolve()
+PROTO_DIR = SCRIPT_DIR / "protos"
+OUTPUT_DIR = SCRIPT_DIR
 
 
 def main():
@@ -21,6 +22,7 @@ def main():
 
     print(f"Compiling {len(proto_files)} proto files from {PROTO_DIR}")
 
+    # Generate Python bindings
     cmd = [
         sys.executable,
         "-m",
@@ -43,6 +45,24 @@ def main():
         else:
             print(f"  WARNING: Expected {pb2_file.name} not found", file=sys.stderr)
 
+    # Generate descriptor.bin (FileDescriptorSet) for schema queryable
+    descriptor_path = OUTPUT_DIR / "descriptor.bin"
+    desc_cmd = [
+        sys.executable,
+        "-m",
+        "grpc_tools.protoc",
+        f"--proto_path={PROTO_DIR}",
+        f"--descriptor_set_out={descriptor_path}",
+        "--include_imports",
+    ] + [str(f) for f in proto_files]
+
+    result = subprocess.run(desc_cmd, capture_output=True, text=True)
+
+    if result.returncode != 0:
+        print(f"ERROR: descriptor generation failed:\n{result.stderr}", file=sys.stderr)
+        sys.exit(1)
+
+    print(f"  Generated: {descriptor_path.name} ({descriptor_path.stat().st_size} bytes)")
     print("Proto compilation complete.")
 
 

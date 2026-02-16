@@ -19,10 +19,10 @@ daemon + nodes  <--- Zenoh --->   daemon + nodes
 
 | Node | Type | Topic | Description |
 |------|------|-------|-------------|
-| **system-telemetry** | Rust (ros-z) | `.../system-telemetry/metrics` | CPU, memory, disk, network, and load metrics via `sysinfo` |
+| **system-telemetry** | Rust | `.../system-telemetry/metrics` | CPU, memory, disk, network, and load metrics via `sysinfo` |
 | **network-monitor** | Python | `.../network-monitor/status` | HTTP endpoint, DNS resolution, and ICMP ping health checks |
-| **rtsp-camera** | Rust (ros-z) | `.../camera/{name}/compressed` | RTSP camera capture with hardware H264 decode via GStreamer |
-| **openmeteo** | Rust (ros-z) | `.../weather/current`, `hourly`, `daily` | Open-Meteo weather data publisher (current, hourly, daily forecasts) |
+| **rtsp-camera** | Rust | `.../camera/{name}/compressed` | RTSP camera capture with hardware H264 decode via GStreamer |
+| **openmeteo** | Rust | `.../weather/current`, `hourly`, `daily` | Open-Meteo weather data publisher (current, hourly, daily forecasts) |
 | **inference** | Rust | `.../inference/output` | ML inference node for camera stream processing |
 
 All topics are prefixed with `bubbaloop/{scope}/{machine}/`.
@@ -126,7 +126,7 @@ See [CLAUDE.md](CLAUDE.md) for detailed security checklist when creating nodes.
 
 All protobuf definitions live in the `bubbaloop-schemas` crate (`~/bubbaloop/crates/bubbaloop-schemas/protos/`), the single source of truth:
 
-- **Rust nodes** depend on it via git: `bubbaloop-schemas = { git = "https://github.com/kornia/bubbaloop.git", branch = "main", features = ["ros-z"] }`
+- **Rust nodes** depend on it via git: `bubbaloop-schemas = { git = "https://github.com/kornia/bubbaloop.git", branch = "main" }`
 - **Python nodes** compile from its `.proto` sources via `build_proto.py`
 
 ## Quick Start
@@ -197,10 +197,10 @@ Machine (e.g., Jetson Orin)
 ```
 bubbaloop/crates/bubbaloop-schemas/  # Shared proto crate (in bubbaloop repo)
 ├── protos/                          # .proto source files
-└── src/lib.rs                       # Compiled Rust types + ros-z trait impls
+└── src/lib.rs                       # Compiled Rust types
 
 bubbaloop-nodes-official/
-├── system-telemetry/        # Rust node (ros-z + sysinfo metrics)
+├── system-telemetry/        # Rust node (sysinfo metrics)
 ├── network-monitor/         # Python node (HTTP/DNS/ping)
 ├── rtsp-camera/             # Rust node (GStreamer H264 capture)
 ├── openmeteo/               # Rust node (weather API)

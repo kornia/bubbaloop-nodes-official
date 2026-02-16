@@ -1,8 +1,9 @@
 use crate::config::Config;
 use crate::h264_capture::{H264Frame, H264StreamCapture};
 use crate::h264_decode::{DecoderBackend, VideoH264Decoder};
-use bubbaloop_schemas::{CompressedImage, Header};
-use ros_z::{context::ZContext, msg::ProtobufSerdes, pubsub::ZPub, Builder, Result as ZResult};
+use bubbaloop_schemas::Header;
+use crate::proto::CompressedImage;
+use prost::Message;
 use std::sync::Arc;
 use tokio::task::JoinSet;
 
@@ -35,19 +36,19 @@ fn frame_to_compressed_image(
 
 /// RTSP Camera node - captures a single H264 stream and publishes compressed frames
 pub struct RtspCameraNode {
-    ctx: Arc<ZContext>,
+    session: Arc<zenoh::Session>,
     config: Config,
     machine_id: String,
 }
 
 impl RtspCameraNode {
     pub fn new(
-        ctx: Arc<ZContext>,
+        session: Arc<zenoh::Session>,
         config: Config,
         machine_id: String,
-    ) -> ZResult<Self> {
+    ) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
         Ok(Self {
-            ctx,
+            session,
             config,
             machine_id,
         })
@@ -56,7 +57,7 @@ impl RtspCameraNode {
     /// Compressed task: feeds decoder, publishes compressed images
     #[allow(clippy::too_many_arguments)]
     async fn compressed_task(
-        ctx: Arc<ZContext>,
+        session: Arc<zenoh::Session>,
         capture: Arc<H264StreamCapture>,
         decoder: Arc<VideoH264Decoder>,
         publish_topic: String,
@@ -64,18 +65,19 @@ impl RtspCameraNode {
         machine_id: String,
         scope: String,
         shutdown_tx: tokio::sync::watch::Sender<()>,
-    ) -> ZResult<()> {
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let mut shutdown_rx = shutdown_tx.subscribe();
 
-        // Create compressed publisher via ros-z
-        let node = ctx
-            .create_node(format!("camera_{}_compressed", camera_name))
-            .build()?;
-
-        let compressed_pub: ZPub<CompressedImage, ProtobufSerdes<CompressedImage>> = node
-            .create_pub::<CompressedImage>(&publish_topic)
-            .with_serdes::<ProtobufSerdes<CompressedImage>>()
-            .build()?;
+        // Create compressed publisher
+        let compressed_pub = session
+            .declare_publisher(&publish_topic)
+            .await
+            .map_err(|e| {
+                Box::<dyn std::error::Error + Send + Sync>::from(format!(
+                    "Publisher error: {}",
+                    e
+                ))
+            })?;
 
         log::info!(
             "[{}] Compressed task started -> '{}'",
@@ -107,7 +109,7 @@ impl RtspCameraNode {
                             // Publish compressed
                             let sequence = h264_frame.sequence;
                             let msg = frame_to_compressed_image(h264_frame, &camera_name, &machine_id, &scope);
-                            if compressed_pub.async_publish(&msg).await.is_ok() {
+                            if compressed_pub.put(msg.encode_to_vec()).await.is_ok() {
                                 published += 1;
                             }
 
@@ -148,7 +150,7 @@ impl RtspCameraNode {
         zenoh_session: std::sync::Arc<zenoh::Session>,
         scope: String,
         machine_id: String,
-    ) -> ZResult<()> {
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let camera_name = self.config.name.clone();
         let publish_topic = self.config.publish_topic.clone();
 
@@ -189,7 +191,7 @@ impl RtspCameraNode {
         log::info!("[{}] Data topic: {}", camera_name, full_data_topic);
         log::info!("[{}] Health topic: {}", camera_name, health_topic);
 
-        // Create health heartbeat publisher (vanilla zenoh)
+        // Create health heartbeat publisher
         let health_publisher = zenoh_session
             .declare_publisher(health_topic.clone())
             .await
@@ -204,7 +206,7 @@ impl RtspCameraNode {
         let mut tasks: JoinSet<()> = JoinSet::new();
 
         tasks.spawn({
-            let ctx = self.ctx.clone();
+            let session = self.session.clone();
             let camera_name = camera_name.clone();
             let capture = capture.clone();
             let decoder = decoder.clone();
@@ -213,7 +215,7 @@ impl RtspCameraNode {
             let shutdown_tx = shutdown_tx.clone();
             async move {
                 if let Err(e) = Self::compressed_task(
-                    ctx,
+                    session,
                     capture,
                     decoder,
                     full_data_topic,

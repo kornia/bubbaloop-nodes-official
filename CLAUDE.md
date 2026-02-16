@@ -120,11 +120,17 @@ publish_topic: my-node/data   # becomes bubbaloop/{scope}/{machine}/my-node/data
 ### Conventions
 
 - **Always use protobuf** for message serialization (never raw JSON for data messages)
-- Define `.proto` files in the `bubbaloop-schemas` crate (`bubbaloop/crates/bubbaloop-schemas/protos/`)
-- **Rust nodes**: Use **ros-z** (not vanilla zenoh) for typed pub/sub with `ProtobufSerdes`
-  - Depend on `bubbaloop-schemas = { git = "https://github.com/kornia/bubbaloop.git", branch = "main", features = ["ros-z"] }`
-  - Use `ZContextBuilder` for connection setup, `ZPub<T, ProtobufSerdes<T>>` for publishing
-  - Use vanilla zenoh only for the health heartbeat (simple string, not protobuf)
+- Define node-specific `.proto` files in the node's own `protos/` directory (NOT in `bubbaloop-schemas`)
+- **Self-contained proto pattern** (Rust nodes):
+  - `protos/header.proto` — shared Header contract (imported by node-specific protos)
+  - `protos/<node>.proto` — node-specific messages (e.g., `system_telemetry.proto`, `weather.proto`)
+  - `build.rs` — compiles protos with `extern_path(".bubbaloop.header.v1", "::bubbaloop_schemas::header::v1")` so Header comes from `bubbaloop-schemas` and custom types are generated locally
+  - `src/proto.rs` — `include!(concat!(env!("OUT_DIR"), "/<package>.rs"));` to bring generated types into scope
+  - Import custom types from `crate::proto::` (or `super::proto::` in binary crates), import `Header` from `bubbaloop_schemas`
+- **Rust nodes**: Use **vanilla Zenoh** with `prost` for typed pub/sub
+  - Depend on `bubbaloop-schemas = { git = "https://github.com/kornia/bubbaloop.git", branch = "main" }` (for `Header` only)
+  - Use `zenoh::open()` for connection, `session.declare_publisher()` for publishing, `prost::Message::encode_to_vec()` for serialization
+  - Use `session.declare_subscriber()` for subscribing, `prost::Message::decode()` for deserialization
 - **Python nodes**: Use vanilla `eclipse-zenoh` with `protobuf` for serialization
   - Compile protos from `../../bubbaloop/crates/bubbaloop-schemas/protos/` via `build_proto.py`
 - Reuse the `Header` message pattern (acq_time, pub_time, sequence, frame_id, machine_id, scope)
@@ -221,14 +227,66 @@ Before submitting a new node, verify ALL items:
 - [ ] Handles SIGINT/SIGTERM gracefully
 
 ### Code
-- [ ] Rust: uses ros-z (not vanilla zenoh) for data pub/sub with `ProtobufSerdes`
-- [ ] Rust: uses vanilla zenoh only for health heartbeat
+- [ ] Rust: uses vanilla zenoh with prost for data pub/sub
+- [ ] Rust: uses vanilla zenoh for both data and health
 - [ ] Python: uses `eclipse-zenoh` + `protobuf`, compiles protos via `build_proto.py`
 - [ ] Accepts CLI flags: `-c config.yaml -e tcp/localhost:7447`
 - [ ] Uses `Header` message pattern (acq_time, pub_time, sequence, frame_id, machine_id, scope)
 - [ ] Reads `BUBBALOOP_SCOPE` env var (default: `local`) and `BUBBALOOP_MACHINE_ID` env var (default: hostname)
 
+### Testing
+- [ ] Rust: config validation has unit tests (`#[cfg(test)]` module) — see `rtsp-camera/src/config.rs` for model
+- [ ] Rust: `cargo test` passes
+- [ ] Python: config loading/validation has tests
+- [ ] CI runs `cargo test` (Rust) and syntax check (Python)
+
 ### Reference
 
 - Existing nodes in this repo: `system-telemetry/` (Rust), `network-monitor/` (Python)
+- `rtsp-camera/` is the compliance reference — only node with full validation tests
 - Bubbaloop plugin development guide: `docs/plugin-development.md` in the bubbaloop repo
+
+## Testing Workflow
+
+### What to test without Zenoh (unit tests — run in CI)
+
+Config validation is the most valuable test target. Extract config parsing into a testable module:
+
+1. **Config parsing**: YAML deserialization succeeds/fails with valid/invalid input
+2. **Topic validation**: Reject names with special characters (`!`, spaces, etc.)
+3. **Bounds checking**: Reject out-of-range numeric values (rate_hz, width, height, etc.)
+4. **Default values**: Verify defaults are applied when fields are omitted
+
+**Rust**: Add `#[cfg(test)] mod tests` in config module. Model after `rtsp-camera/src/config.rs` (9 tests).
+**Python**: Add `test_config.py` with pytest. Test YAML loading, topic regex, numeric bounds.
+
+### What needs Zenoh (integration tests — run locally)
+
+These require a running `zenohd` router but NOT the daemon:
+
+```bash
+# Start a local Zenoh router
+zenohd --no-multicast-scouting &
+
+# Run the node
+pixi run run &
+
+# Verify health heartbeat (should see messages every <=10s)
+z_sub -e tcp/localhost:7447 -k "bubbaloop/local/*/health/*"
+
+# Verify data publishing
+z_sub -e tcp/localhost:7447 -k "bubbaloop/local/*/**"
+
+# Stop
+kill %1 %2
+```
+
+### What needs the daemon (end-to-end — manual)
+
+```bash
+bubbaloop node add .
+bubbaloop node start <name>
+bubbaloop node list              # Verify status: HEALTHY
+bubbaloop node logs <name> -f    # Check for errors
+bubbaloop node stop <name>
+```

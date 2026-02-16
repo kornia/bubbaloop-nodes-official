@@ -2,15 +2,16 @@
 
 use anyhow::Result;
 use argh::FromArgs;
-use ros_z::context::ZContextBuilder;
-use ros_z::Builder;
-use serde_json::json;
 use std::path::PathBuf;
 use std::sync::Arc;
 
 mod node;
+mod proto;
 
 use node::SystemTelemetryNode;
+
+/// FileDescriptorSet for this node's protobuf schemas
+pub const DESCRIPTOR: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/descriptor.bin"));
 
 /// System telemetry metrics (CPU, memory, disk, network, load)
 #[derive(FromArgs)]
@@ -51,18 +52,22 @@ async fn main() -> Result<()> {
         })?;
     }
 
-    // Initialize ROS-Z context
+    // Initialize Zenoh session in client mode
     let endpoint = std::env::var("ZENOH_ENDPOINT").unwrap_or(args.endpoint);
     log::info!("Connecting to Zenoh at: {}", endpoint);
-    let ctx = Arc::new(
-        ZContextBuilder::default()
-            .with_json("connect/endpoints", json!([endpoint]))
-            .build()
-            .map_err(|e| anyhow::anyhow!("Failed to create ROS-Z context: {}", e))?,
+    let mut config = zenoh::Config::default();
+    config.insert_json5("mode", r#""client""#).unwrap();
+    config
+        .insert_json5("connect/endpoints", &format!(r#"["{}"]"#, endpoint))
+        .unwrap();
+    let session = Arc::new(
+        zenoh::open(config)
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to open Zenoh session: {}", e))?,
     );
 
     // Create and run the node
-    let node = SystemTelemetryNode::new(ctx, &args.config, &endpoint).await?;
+    let node = SystemTelemetryNode::new(session, &args.config).await?;
 
     log::info!("system-telemetry node started");
 

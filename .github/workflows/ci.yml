@@ -74,6 +74,10 @@ jobs:
         working-directory: ${{ matrix.node }}
         run: pixi run -e default cargo clippy --all-targets -- -D warnings
 
+      - name: Test
+        working-directory: ${{ matrix.node }}
+        run: pixi run -e default cargo test
+
   python-nodes:
     name: "Build network-monitor"
     runs-on: ubuntu-latest
@@ -94,3 +98,7 @@ jobs:
         working-directory: network-monitor
         run: pixi run build-proto
         continue-on-error: true
+
+      - name: Syntax check
+        working-directory: network-monitor
+        run: pixi run python -m py_compile main.py

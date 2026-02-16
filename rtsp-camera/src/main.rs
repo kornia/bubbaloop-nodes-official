@@ -4,12 +4,12 @@
 //! multiple instances with different names and configs via the daemon.
 
 use argh::FromArgs;
-use ros_z::context::ZContextBuilder;
-use ros_z::Builder;
 use rtsp_camera::{config::Config, rtsp_camera_node::RtspCameraNode};
-use serde_json::json;
 use std::path::PathBuf;
 use std::sync::Arc;
+
+/// FileDescriptorSet for this node's protobuf schemas
+const DESCRIPTOR: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/descriptor.bin"));
 
 /// RTSP camera capture with hardware H264 decode
 #[derive(FromArgs)]
@@ -62,14 +62,18 @@ async fn main() -> anyhow::Result<()> {
         })?;
     }
 
-    // Initialize ROS-Z context
+    // Initialize Zenoh session in client mode
     let endpoint = std::env::var("ZENOH_ENDPOINT").unwrap_or(args.endpoint);
     log::info!("Connecting to Zenoh at: {}", endpoint);
-    let ctx = Arc::new(
-        ZContextBuilder::default()
-            .with_json("connect/endpoints", json!([endpoint]))
-            .build()
-            .map_err(|e| anyhow::anyhow!("Failed to create ROS-Z context: {}", e))?,
+    let mut zenoh_config = zenoh::Config::default();
+    zenoh_config.insert_json5("mode", r#""client""#).unwrap();
+    zenoh_config
+        .insert_json5("connect/endpoints", &format!(r#"["{}"]"#, endpoint))
+        .unwrap();
+    let zenoh_session = Arc::new(
+        zenoh::open(zenoh_config)
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to open Zenoh session: {}", e))?,
     );
 
     // Read scope/machine env vars
@@ -79,22 +83,29 @@ async fn main() -> anyhow::Result<()> {
             .map(|h| h.to_string_lossy().to_string())
             .unwrap_or_else(|_| "unknown".to_string())
     })
-    // Sanitize for ros-z topic compatibility (hyphens are invalid in topic components)
+    // Sanitize hostname for topic compatibility (hyphens can cause issues)
     .replace('-', "_");
     log::info!("Scope: {}, Machine ID: {}", scope, machine_id);
 
-    // Create vanilla zenoh session for health heartbeat
-    let zenoh_session = {
-        let mut c = zenoh::Config::default();
-        c.insert_json5("connect/endpoints", &format!(r#"["{}"]"#, endpoint))
-            .unwrap();
-        Arc::new(zenoh::open(c).await.map_err(|e| {
-            anyhow::anyhow!("Failed to open Zenoh session: {}", e)
-        })?)
-    };
+    // Declare schema queryable so dashboard/tools can discover this node's protobuf schemas
+    let schema_key = format!(
+        "bubbaloop/{}/{}/rtsp-camera/schema",
+        scope, machine_id
+    );
+    let _schema_queryable = zenoh_session
+        .declare_queryable(&schema_key)
+        .callback({
+            let descriptor = DESCRIPTOR.to_vec();
+            move |query| {
+                let _ = query.reply(&query.key_expr().clone(), descriptor.as_slice());
+            }
+        })
+        .await
+        .map_err(|e| anyhow::anyhow!("Failed to create schema queryable: {}", e))?;
+    log::info!("Schema queryable: {}", schema_key);
 
     // Create and run the node
-    let node = RtspCameraNode::new(ctx, config, machine_id.clone())
+    let node = RtspCameraNode::new(zenoh_session.clone(), config, machine_id.clone())
         .map_err(|e| anyhow::anyhow!("Failed to create camera node: {}", e))?;
 
     log::info!("rtsp-camera node started");

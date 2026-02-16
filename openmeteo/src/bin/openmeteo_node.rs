@@ -1,8 +1,10 @@
+use anyhow::Result;
 use argh::FromArgs;
 use openmeteo::{config::Config, openmeteo_node::OpenMeteoNode, resolve_location};
-use ros_z::{context::ZContextBuilder, Builder, Result as ZResult};
-use serde_json::json;
 use std::sync::Arc;
+
+/// FileDescriptorSet for this node's protobuf schemas
+const DESCRIPTOR: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/descriptor.bin"));
 
 #[derive(FromArgs)]
 /// Open-Meteo weather data publisher for Zenoh
@@ -18,7 +20,7 @@ struct Args {
 }
 
 #[tokio::main]
-async fn main() -> ZResult<()> {
+async fn main() -> Result<()> {
     // Initialize logging
     let env = env_logger::Env::default().default_filter_or("info");
     env_logger::init_from_env(env);
@@ -81,27 +83,39 @@ async fn main() -> ZResult<()> {
     });
     log::info!("Scope: {}, Machine ID: {}", scope, machine_id);
 
-    // Initialize ROS-Z context
+    // Initialize Zenoh session in client mode
     let endpoint = std::env::var("ZENOH_ENDPOINT").unwrap_or(args.endpoint);
     log::info!("Connecting to Zenoh at: {}", endpoint);
-    let ctx = Arc::new(
-        ZContextBuilder::default()
-            .with_json("connect/endpoints", json!([endpoint]))
-            .build()?,
+    let mut zenoh_config = zenoh::Config::default();
+    zenoh_config.insert_json5("mode", r#""client""#).unwrap();
+    zenoh_config
+        .insert_json5("connect/endpoints", &format!(r#"["{}"]"#, endpoint))
+        .unwrap();
+    let zenoh_session = Arc::new(
+        zenoh::open(zenoh_config)
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to open Zenoh session: {}", e))?,
     );
 
-    // Create vanilla zenoh session for health heartbeat
-    let zenoh_session = {
-        let mut c = zenoh::Config::default();
-        c.insert_json5("connect/endpoints", &format!(r#"["{}"]"#, endpoint))
-            .unwrap();
-        zenoh::open(c).await.map_err(|e| {
-            Box::<dyn std::error::Error + Send + Sync>::from(format!("Zenoh session error: {}", e))
-        })?
-    };
+    // Declare schema queryable so dashboard/tools can discover this node's protobuf schemas
+    let schema_key = format!(
+        "bubbaloop/{}/{}/openmeteo/schema",
+        scope, machine_id
+    );
+    let _schema_queryable = zenoh_session
+        .declare_queryable(&schema_key)
+        .callback({
+            let descriptor = DESCRIPTOR.to_vec();
+            move |query| {
+                let _ = query.reply(&query.key_expr().clone(), descriptor.as_slice());
+            }
+        })
+        .await
+        .map_err(|e| anyhow::anyhow!("Failed to create schema queryable: {}", e))?;
+    log::info!("Schema queryable: {}", schema_key);
 
     // Create and run the weather node
-    let node = OpenMeteoNode::new(ctx, resolved_location, config.fetch, machine_id.clone())?;
+    let node = OpenMeteoNode::new(zenoh_session.clone(), resolved_location, config.fetch, machine_id.clone())?;
     node.run(shutdown_tx, zenoh_session, scope, machine_id)
         .await?;
 

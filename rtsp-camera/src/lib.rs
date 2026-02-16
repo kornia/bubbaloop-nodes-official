@@ -1,6 +1,7 @@
 pub mod config;
 pub mod h264_capture;
 pub mod h264_decode;
+pub mod proto;
 pub mod rtsp_camera_node;
 
 // Re-export commonly used types
