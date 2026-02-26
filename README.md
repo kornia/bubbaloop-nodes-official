@@ -23,8 +23,6 @@ daemon + nodes  <--- Zenoh --->   daemon + nodes
 | **network-monitor** | Python | `.../network-monitor/status` | HTTP endpoint, DNS resolution, and ICMP ping health checks |
 | **rtsp-camera** | Rust | `.../camera/{name}/compressed` | RTSP camera capture with hardware H264 decode via GStreamer |
 | **openmeteo** | Rust | `.../weather/current`, `hourly`, `daily` | Open-Meteo weather data publisher (current, hourly, daily forecasts) |
-| **inference** | Rust | `.../inference/output` | ML inference node for camera stream processing |
-
 All topics are prefixed with `bubbaloop/{scope}/{machine}/`.
 
 ## Node Lifecycle
@@ -204,7 +202,6 @@ bubbaloop-nodes-official/
 ├── network-monitor/         # Python node (HTTP/DNS/ping)
 ├── rtsp-camera/             # Rust node (GStreamer H264 capture)
 ├── openmeteo/               # Rust node (weather API)
-├── inference/               # Rust node (ML inference)
 └── nodes.yaml               # Node registry for marketplace
 ```
 

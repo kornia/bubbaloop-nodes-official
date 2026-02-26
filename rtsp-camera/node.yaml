@@ -5,3 +5,25 @@ description: RTSP camera capture with hardware H264 decode
 author: Bubbaloop Team
 build: pixi run build
 command: ./target/release/rtsp_camera_node
+
+capabilities:
+  - sensor
+
+publishes:
+  - suffix: camera/{name}/compressed
+    description: "H264 compressed video frames from RTSP stream"
+    schema_type: "bubbaloop.camera.v1.CompressedImage"
+    rate_hz: 30.0
+
+requires:
+  hardware:
+    - network
+    - camera
+    - gpu
+
+  software:
+    - gstreamer
+    - gst-plugins-base
+    - gst-plugins-good
+    - gst-plugins-bad
+    - gst-rtsp-server
