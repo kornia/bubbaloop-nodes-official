@@ -3,5 +3,29 @@ version: "0.1.0"
 type: python
 description: Network connectivity monitor (HTTP, DNS, ping health checks)
 author: Bubbaloop Team
-build: "pixi run build-proto"
-command: "pixi run run"
+build: pixi run build-proto
+command: pixi run run
+
+capabilities:
+  - sensor
+
+publishes:
+  - suffix: network-monitor/status
+    description: "Network connectivity status (HTTP response codes, DNS resolution, ping latency)"
+    schema_type: "bubbaloop.network_monitor.v1.NetworkStatus"
+    rate_hz: 0.1
+
+commands:
+  - name: ping_host
+    description: "Trigger immediate ping check for a specific host"
+    params:
+      - name: target
+        type: string
+        description: "Hostname or IP address to ping"
+
+requires:
+  hardware:
+    - network
+
+  software:
+    - ping
