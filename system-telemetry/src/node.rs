@@ -60,6 +60,7 @@ impl Default for Config {
 }
 
 impl Config {
+    #[cfg(test)]
     /// Parse configuration from a YAML string
     pub fn parse(yaml: &str) -> Result<Self> {
         let config: Config =
