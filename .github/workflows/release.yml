@@ -27,8 +27,6 @@ jobs:
             binary: rtsp_camera_node
           - name: openmeteo
             binary: openmeteo_node
-          - name: inference
-            binary: inference_node
           - name: system-telemetry
             binary: system_telemetry_node
         arch:
@@ -124,7 +122,6 @@ jobs:
             |------|----------------|----------------|
             | rtsp-camera | `rtsp-camera-linux-amd64` | `rtsp-camera-linux-arm64` |
             | openmeteo | `openmeteo-linux-amd64` | `openmeteo-linux-arm64` |
-            | inference | `inference-linux-amd64` | `inference-linux-arm64` |
             | system-telemetry | `system-telemetry-linux-amd64` | `system-telemetry-linux-arm64` |
 
             Install with:
@@ -151,7 +148,6 @@ jobs:
             |------|----------------|----------------|
             | rtsp-camera | `rtsp-camera-linux-amd64` | `rtsp-camera-linux-arm64` |
             | openmeteo | `openmeteo-linux-amd64` | `openmeteo-linux-arm64` |
-            | inference | `inference-linux-amd64` | `inference-linux-arm64` |
             | system-telemetry | `system-telemetry-linux-amd64` | `system-telemetry-linux-arm64` |
 
             Install with:
