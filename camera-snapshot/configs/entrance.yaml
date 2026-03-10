@@ -1,0 +1,10 @@
+# Camera snapshot configuration
+# Run: python main.py -c configs/entrance.yaml
+
+name: entrance
+publish_topic: camera/entrance/snapshot
+url: "http://192.168.1.10/snapshot.jpg"
+interval_secs: 1.0
+mock: true
+width: 640
+height: 480

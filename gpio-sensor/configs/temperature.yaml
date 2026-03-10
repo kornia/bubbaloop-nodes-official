@@ -1,0 +1,9 @@
+# Temperature sensor on GPIO pin 4 (e.g. DHT22 with bit-bang library)
+# Run: ./target/release/gpio_sensor_node -c configs/temperature.yaml
+
+name: temp_sensor
+publish_topic: gpio/temp_sensor/reading
+pin: 4
+sensor_type: temperature
+interval_secs: 2.0
+simulation: true

@@ -1,0 +1,24 @@
+name: camera-snapshot
+version: "0.1.0"
+type: python
+description: HTTP/MJPEG camera snapshot poller — polls a camera URL and publishes JPEG frames
+author: Bubbaloop Team
+build: pip install -r requirements.txt
+command: python main.py
+
+capabilities:
+  - sensor
+
+publishes:
+  - suffix: camera/{name}/snapshot
+    description: "JPEG snapshot from HTTP/MJPEG camera"
+    schema_type: "bytes"
+    rate_hz: 1.0
+
+requires:
+  hardware:
+    - network
+    - camera
+  software:
+    - python3
+    - pip

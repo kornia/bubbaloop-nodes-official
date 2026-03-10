@@ -1,0 +1,25 @@
+name: mqtt-bridge
+version: "0.1.0"
+type: python
+description: MQTT to Zenoh bridge — subscribes to MQTT topics and republishes on Zenoh
+author: Bubbaloop Team
+build: pip install -r requirements.txt
+command: python main.py
+
+capabilities:
+  - sensor
+  - bridge
+
+publishes:
+  - suffix: mqtt/{name}/{topic}
+    description: "MQTT message forwarded to Zenoh"
+    schema_type: "application/json"
+    rate_hz: null
+
+requires:
+  hardware:
+    - network
+  software:
+    - python3
+    - pip
+    - paho-mqtt

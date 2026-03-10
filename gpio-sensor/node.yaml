@@ -1,0 +1,21 @@
+name: gpio-sensor
+version: "0.1.0"
+type: rust
+description: GPIO/edge device sensor with simulation mode and rppal/gpio-cdev hardware support
+author: Bubbaloop Team
+build: cargo build --release
+command: ./target/release/gpio_sensor_node
+
+capabilities:
+  - sensor
+
+publishes:
+  - suffix: gpio/{name}/reading
+    description: "GPIO pin reading (digital/analog/temperature/motion) as JSON"
+    schema_type: "application/json"
+    rate_hz: 1.0
+
+requires:
+  hardware:
+    - gpio
+  software: []

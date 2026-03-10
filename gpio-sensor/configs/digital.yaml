@@ -1,0 +1,9 @@
+# Door/window sensor on GPIO pin 22 (reed switch, digital input)
+# Run: ./target/release/gpio_sensor_node -c configs/digital.yaml
+
+name: door_sensor
+publish_topic: gpio/door_sensor/reading
+pin: 22
+sensor_type: digital
+interval_secs: 0.1
+simulation: true

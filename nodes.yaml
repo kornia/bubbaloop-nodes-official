@@ -37,3 +37,40 @@ nodes:
     tags: [sensor, network, dns, ping, http, connectivity, health-check, latency]
     repo: kornia/bubbaloop-nodes-official
     subdir: network-monitor
+
+  - name: gpio-sensor
+    description: "GPIO/edge device sensor with simulation mode and rppal/gpio-cdev hardware support"
+    version: "0.1.0"
+    type: rust
+    category: sensors
+    tags: [sensor, gpio, digital, analog, temperature, motion, raspberry-pi, jetson, edge]
+    repo: kornia/bubbaloop-nodes-official
+    subdir: gpio-sensor
+    binary: gpio_sensor_node
+
+  - name: camera-snapshot
+    description: "HTTP/MJPEG camera snapshot poller — polls a camera URL and publishes JPEG frames"
+    version: "0.1.0"
+    type: python
+    category: camera
+    tags: [sensor, camera, http, mjpeg, jpeg, snapshot, ip-camera]
+    repo: kornia/bubbaloop-nodes-official
+    subdir: camera-snapshot
+
+  - name: serial-sensor
+    description: "Serial port sensor reader — reads JSON or CSV data from Arduino and serial devices"
+    version: "0.1.0"
+    type: python
+    category: sensors
+    tags: [sensor, serial, uart, arduino, esp32, json, csv, pyserial, edge]
+    repo: kornia/bubbaloop-nodes-official
+    subdir: serial-sensor
+
+  - name: mqtt-bridge
+    description: "MQTT to Zenoh bridge — subscribes to MQTT topics and republishes on Zenoh"
+    version: "0.1.0"
+    type: python
+    category: iot
+    tags: [sensor, bridge, mqtt, iot, home-assistant, paho, mosquitto, smart-home]
+    repo: kornia/bubbaloop-nodes-official
+    subdir: mqtt-bridge

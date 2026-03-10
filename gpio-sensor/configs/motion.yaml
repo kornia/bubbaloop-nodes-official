@@ -1,0 +1,9 @@
+# Motion sensor on GPIO pin 17 (e.g. HC-SR501 PIR)
+# Run: ./target/release/gpio_sensor_node -c configs/motion.yaml
+
+name: motion_sensor
+publish_topic: gpio/motion_sensor/reading
+pin: 17
+sensor_type: motion
+interval_secs: 0.1
+simulation: true

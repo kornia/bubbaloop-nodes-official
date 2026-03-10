@@ -1,0 +1,24 @@
+name: serial-sensor
+version: "0.1.0"
+type: python
+description: Serial port sensor reader — reads JSON or CSV data from serial devices (Arduino, sensors)
+author: Bubbaloop Team
+build: pip install -r requirements.txt
+command: python main.py
+
+capabilities:
+  - sensor
+
+publishes:
+  - suffix: serial/{name}/reading
+    description: "Sensor reading from serial port (JSON or CSV format)"
+    schema_type: "application/json"
+    rate_hz: 1.0
+
+requires:
+  hardware:
+    - serial
+  software:
+    - python3
+    - pip
+    - pyserial

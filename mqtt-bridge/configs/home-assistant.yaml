@@ -1,0 +1,12 @@
+# MQTT bridge configuration
+# Run: python main.py -c configs/home-assistant.yaml
+
+name: homeassistant
+publish_topic_prefix: mqtt/homeassistant
+broker: "localhost"
+port: 1883
+topics:
+  - "homeassistant/sensor/+/state"
+  - "homeassistant/binary_sensor/+/state"
+mock: true
+mock_interval_secs: 2.0

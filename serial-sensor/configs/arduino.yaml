@@ -1,0 +1,10 @@
+# Serial sensor configuration
+# Run: python main.py -c configs/arduino.yaml
+
+name: arduino
+publish_topic: serial/arduino/reading
+port: /dev/ttyUSB0
+baud_rate: 9600
+format: json
+interval_secs: 1.0
+mock: true
