@@ -1,29 +1,6 @@
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 
-/// Decoder backend selection for raw frame decoding
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum DecoderBackend {
-    /// Software decoding using avdec_h264 (CPU, always available)
-    #[default]
-    Cpu,
-    /// Hardware decoding using nvh264dec (NVIDIA desktop GPU)
-    Nvidia,
-    /// Hardware decoding using nvv4l2decoder (NVIDIA Jetson)
-    Jetson,
-}
-
-impl From<DecoderBackend> for crate::h264_decode::DecoderBackend {
-    fn from(config: DecoderBackend) -> Self {
-        match config {
-            DecoderBackend::Cpu => crate::h264_decode::DecoderBackend::Software,
-            DecoderBackend::Nvidia => crate::h264_decode::DecoderBackend::Nvidia,
-            DecoderBackend::Jetson => crate::h264_decode::DecoderBackend::Jetson,
-        }
-    }
-}
-
 /// Configuration for a single RTSP camera instance
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Config {
@@ -38,13 +15,9 @@ pub struct Config {
     /// Latency in milliseconds for the RTSP stream
     #[serde(default = "default_latency")]
     pub latency: u32,
-    /// Decoder backend to use (cpu, nvidia, jetson)
+    /// Frame rate hint (informational, actual rate depends on RTSP source)
     #[serde(default)]
-    pub decoder: DecoderBackend,
-    /// Output width for decoded frames
-    pub width: u32,
-    /// Output height for decoded frames
-    pub height: u32,
+    pub frame_rate: Option<u32>,
 }
 
 fn default_latency() -> u32 {
@@ -60,6 +33,7 @@ impl Config {
     }
 
     /// Parse configuration from a YAML string
+    #[cfg_attr(not(test), allow(dead_code))]
     pub fn parse(yaml: &str) -> Result<Self, ConfigError> {
         let config: Config =
             serde_yaml::from_str(yaml).map_err(|e| ConfigError::ParseError(e.to_string()))?;
@@ -102,20 +76,6 @@ impl Config {
             )));
         }
 
-        if self.width == 0 || self.width > 7680 {
-            return Err(ConfigError::ValidationError(format!(
-                "width {} out of range (1-7680)",
-                self.width
-            )));
-        }
-
-        if self.height == 0 || self.height > 4320 {
-            return Err(ConfigError::ValidationError(format!(
-                "height {} out of range (1-4320)",
-                self.height
-            )));
-        }
-
         Ok(())
     }
 }
@@ -142,51 +102,25 @@ name: entrance
 publish_topic: camera/entrance/compressed
 url: "rtsp://192.168.1.10:554/stream"
 latency: 200
-decoder: cpu
-width: 640
-height: 480
 "#;
         let config = Config::parse(yaml)?;
         assert_eq!(config.name, "entrance");
         assert_eq!(config.publish_topic, "camera/entrance/compressed");
         assert_eq!(config.latency, 200);
-        assert_eq!(config.width, 640);
-        assert_eq!(config.height, 480);
-        assert_eq!(config.decoder, DecoderBackend::Cpu);
         Ok(())
     }
 
     #[test]
-    fn test_parse_config_with_nvidia() -> Result<(), ConfigError> {
+    fn test_parse_config_with_frame_rate() -> Result<(), ConfigError> {
         let yaml = r#"
 name: front
 publish_topic: camera/front/compressed
 url: "rtsp://192.168.1.10:554/stream"
 latency: 200
-decoder: nvidia
-width: 640
-height: 480
+frame_rate: 30
 "#;
         let config = Config::parse(yaml)?;
-        assert_eq!(config.decoder, DecoderBackend::Nvidia);
-        Ok(())
-    }
-
-    #[test]
-    fn test_parse_config_with_jetson() -> Result<(), ConfigError> {
-        let yaml = r#"
-name: front
-publish_topic: camera/front/compressed
-url: "rtsp://192.168.1.10:554/stream"
-latency: 200
-decoder: jetson
-width: 320
-height: 240
-"#;
-        let config = Config::parse(yaml)?;
-        assert_eq!(config.decoder, DecoderBackend::Jetson);
-        assert_eq!(config.width, 320);
-        assert_eq!(config.height, 240);
+        assert_eq!(config.frame_rate, Some(30));
         Ok(())
     }
 
@@ -196,8 +130,6 @@ height: 240
 name: "bad name with spaces"
 publish_topic: camera/test/compressed
 url: "rtsp://192.168.1.10:554/stream"
-width: 640
-height: 480
 "#;
         assert!(Config::parse(yaml).is_err());
     }
@@ -208,8 +140,6 @@ height: 480
 name: test
 publish_topic: "camera/test/bad topic!"
 url: "rtsp://192.168.1.10:554/stream"
-width: 640
-height: 480
 "#;
         assert!(Config::parse(yaml).is_err());
     }
@@ -220,20 +150,6 @@ height: 480
 name: test
 publish_topic: camera/test/compressed
 url: ""
-width: 640
-height: 480
-"#;
-        assert!(Config::parse(yaml).is_err());
-    }
-
-    #[test]
-    fn test_validate_zero_width() {
-        let yaml = r#"
-name: test
-publish_topic: camera/test/compressed
-url: "rtsp://192.168.1.10:554/stream"
-width: 0
-height: 480
 "#;
         assert!(Config::parse(yaml).is_err());
     }
@@ -244,9 +160,6 @@ height: 480
 name: test
 publish_topic: camera/test/compressed
 url: "rtsp://192.168.1.10:554/stream"
-decoder: cpu
-width: 640
-height: 480
 "#;
         let config = Config::parse(yaml)?;
         assert_eq!(config.latency, 200);
@@ -254,16 +167,19 @@ height: 480
     }
 
     #[test]
-    fn test_url_env_override() -> Result<(), ConfigError> {
+    fn test_backward_compat_ignores_unknown_fields() -> Result<(), ConfigError> {
+        // Old configs with decoder/width/height should still parse (serde ignores unknown by default)
         let yaml = r#"
 name: test
 publish_topic: camera/test/compressed
-url: "rtsp://placeholder:554/stream"
+url: "rtsp://192.168.1.10:554/stream"
+decoder: cpu
 width: 640
 height: 480
 "#;
+        // serde_yaml ignores unknown fields by default, so this should work
         let config = Config::parse(yaml)?;
-        assert_eq!(config.url, "rtsp://placeholder:554/stream");
+        assert_eq!(config.name, "test");
         Ok(())
     }
 }

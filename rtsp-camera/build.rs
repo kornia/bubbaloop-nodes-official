@@ -18,7 +18,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let proto_strs: Vec<_> = proto_files.iter().filter_map(|p| p.to_str()).collect();
     prost_build::Config::new()
-        .extern_path(".bubbaloop.header.v1", "::bubbaloop_schemas::header::v1")
+        .extern_path(".bubbaloop.header.v1", "::bubbaloop_node::schemas::header::v1")
         .type_attribute(".", "#[derive(serde::Serialize, serde::Deserialize)]")
         .file_descriptor_set_path(out_dir.join("descriptor.bin"))
         .compile_protos(&proto_strs, &["protos/"])?;
