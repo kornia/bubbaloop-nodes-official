@@ -5,7 +5,7 @@ description: Network connectivity monitor (HTTP, DNS, ping health checks)
 author: Bubbaloop Team
 
 command:
-  run: pixi run run -- -c {config}
+  run: pixi run run -c {config}
 
 capabilities:
   - sensor

@@ -1,5 +1,7 @@
 # Instance parameters for system-telemetry.
-# Run: ./target/release/system_telemetry_node -c config.yaml
+# Run: pixi run run -- -c config.yaml
+
+name: system-telemetry
 
 # Topic to publish metrics to
 publish_topic: system-telemetry/metrics

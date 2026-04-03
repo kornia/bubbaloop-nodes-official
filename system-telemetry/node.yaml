@@ -5,7 +5,7 @@ description: System metrics publisher (CPU, memory, disk, network, load)
 author: Bubbaloop Team
 
 command:
-  run: pixi run run -- -c {config}
+  run: pixi run run -c {config}
 
 capabilities:
   - sensor

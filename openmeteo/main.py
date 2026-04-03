@@ -7,12 +7,26 @@ Location is auto-discovered from IP or set explicitly in config.
 """
 
 import logging
+import re
 import time
 from datetime import datetime, timezone
 
 import requests
 
 log = logging.getLogger("openmeteo")
+
+# Match the snakeToCamel convention used by the dashboard's SchemaRegistry:
+# only convert _[lowercase], so temperature_2m stays, wind_speed_10m → windSpeed_10m
+_SNAKE_RE = re.compile(r"_([a-z])")
+
+def _snake_to_camel(obj):
+    """Recursively convert snake_case dict keys to camelCase (dashboard convention)."""
+    if isinstance(obj, list):
+        return [_snake_to_camel(v) for v in obj]
+    if isinstance(obj, dict):
+        return {_SNAKE_RE.sub(lambda m: m.group(1).upper(), k): _snake_to_camel(v)
+                for k, v in obj.items()}
+    return obj
 
 BASE_URL = "https://api.open-meteo.com/v1/forecast"
 IPINFO_URL = "https://ipinfo.io/json"
@@ -83,13 +97,14 @@ def fetch_current(lat: float, lon: float, tz: str) -> dict:
     r = requests.get(BASE_URL, params=params, timeout=10)
     r.raise_for_status()
     data = r.json()
-    return {
+    payload = {
         "latitude": data["latitude"],
         "longitude": data["longitude"],
         "timezone": data.get("timezone", tz),
         "timestamp": datetime.now(timezone.utc).isoformat(),
         **data["current"],
     }
+    return _snake_to_camel(payload)
 
 
 def fetch_hourly(lat: float, lon: float, tz: str, hours: int) -> dict:
@@ -107,13 +122,14 @@ def fetch_hourly(lat: float, lon: float, tz: str, hours: int) -> dict:
         {k: hourly[k][i] for k in hourly}
         for i in range(len(hourly["time"]))
     ]
-    return {
+    payload = {
         "latitude": data["latitude"],
         "longitude": data["longitude"],
         "timezone": data.get("timezone", tz),
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "entries": entries,
     }
+    return _snake_to_camel(payload)
 
 
 def fetch_daily(lat: float, lon: float, tz: str, days: int) -> dict:
@@ -130,13 +146,14 @@ def fetch_daily(lat: float, lon: float, tz: str, days: int) -> dict:
         {k: daily[k][i] for k in daily}
         for i in range(len(daily["time"]))
     ]
-    return {
+    payload = {
         "latitude": data["latitude"],
         "longitude": data["longitude"],
         "timezone": data.get("timezone", tz),
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "entries": entries,
     }
+    return _snake_to_camel(payload)
 
 
 # ------------------------------------------------------------------
@@ -182,7 +199,7 @@ class OpenMeteoNode:
             try:
                 data = fetch_current(lat, lon, tz)
                 self.pub_current.put(data)
-                log.info("current: %.1f°C, wind=%.1f km/h", data["temperature_2m"], data["wind_speed_10m"])
+                log.info("current: %.1f°C, wind=%.1f km/h", data["temperature_2m"], data["windSpeed_10m"])
             except Exception as e:
                 log.warning("current fetch failed: %s", e)
 

@@ -22,32 +22,30 @@ TOPIC_RE = re.compile(r"^[a-zA-Z0-9/_\-\.]+$")
 
 def collect_cpu() -> dict:
     usage = psutil.cpu_percent(interval=None, percpu=True)
-    freq = psutil.cpu_freq()
     return {
-        "usage_percent": sum(usage) / len(usage) if usage else 0.0,
-        "per_core_percent": usage,
+        "usagePercent": sum(usage) / len(usage) if usage else 0.0,
+        "perCore": usage,
         "count": psutil.cpu_count(logical=True),
-        "frequency_mhz": freq.current if freq else None,
     }
 
 
 def collect_memory() -> dict:
     m = psutil.virtual_memory()
     return {
-        "total_bytes": m.total,
-        "used_bytes": m.used,
-        "available_bytes": m.available,
-        "usage_percent": m.percent,
+        "totalBytes": m.total,
+        "usedBytes": m.used,
+        "availableBytes": m.available,
+        "usagePercent": m.percent,
     }
 
 
 def collect_disk() -> dict:
     usage = psutil.disk_usage("/")
     return {
-        "total_bytes": usage.total,
-        "used_bytes": usage.used,
-        "available_bytes": usage.free,
-        "usage_percent": usage.percent,
+        "totalBytes": usage.total,
+        "usedBytes": usage.used,
+        "availableBytes": usage.free,
+        "usagePercent": usage.percent,
     }
 
 
@@ -55,23 +53,18 @@ def collect_network(prev: dict | None) -> dict:
     counters = psutil.net_io_counters()
     now = time.monotonic()
     result = {
-        "bytes_sent_total": counters.bytes_sent,
-        "bytes_recv_total": counters.bytes_recv,
-        "bytes_sent_per_sec": 0.0,
-        "bytes_recv_per_sec": 0.0,
+        "bytesSent": counters.bytes_sent,
+        "bytesRecv": counters.bytes_recv,
     }
-    if prev:
-        elapsed = now - prev["_ts"]
-        if elapsed > 0:
-            result["bytes_sent_per_sec"] = (counters.bytes_sent - prev["bytes_sent_total"]) / elapsed
-            result["bytes_recv_per_sec"] = (counters.bytes_recv - prev["bytes_recv_total"]) / elapsed
     result["_ts"] = now
+    result["_sent"] = counters.bytes_sent
+    result["_recv"] = counters.bytes_recv
     return result
 
 
 def collect_load() -> dict:
     avg = psutil.getloadavg()
-    return {"one_min": avg[0], "five_min": avg[1], "fifteen_min": avg[2]}
+    return {"oneMin": avg[0], "fiveMin": avg[1], "fifteenMin": avg[2]}
 
 
 # ------------------------------------------------------------------
@@ -125,15 +118,15 @@ class SystemTelemetryNode:
             if self.do_network:
                 net = collect_network(self._prev_net)
                 self._prev_net = net
-                payload["network"] = {k: v for k, v in net.items() if not k.startswith("_")}
+                payload["network"] = {"bytesSent": net["bytesSent"], "bytesRecv": net["bytesRecv"]}
             if self.do_load:
                 payload["load"] = collect_load()
 
             self.pub.put(payload)
 
             if self._seq % 10 == 0:
-                cpu_pct = payload.get("cpu", {}).get("usage_percent", 0)
-                mem_pct = payload.get("memory", {}).get("usage_percent", 0)
+                cpu_pct = payload.get("cpu", {}).get("usagePercent", 0)
+                mem_pct = payload.get("memory", {}).get("usagePercent", 0)
                 log.info("seq=%d cpu=%.1f%% mem=%.1f%%", self._seq, cpu_pct, mem_pct)
 
             self._seq += 1

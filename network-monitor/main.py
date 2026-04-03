@@ -28,12 +28,12 @@ def check_http(name: str, target: str, timeout: float) -> dict:
     try:
         r = requests.get(target, timeout=timeout)
         return {"name": name, "type": "http", "target": target,
-                "status": "ok", "latency_ms": r.elapsed.total_seconds() * 1000,
-                "http_status": r.status_code}
+                "statusName": "OK", "latencyMs": r.elapsed.total_seconds() * 1000,
+                "statusCode": r.status_code}
     except requests.Timeout:
-        return {"name": name, "type": "http", "target": target, "status": "timeout"}
+        return {"name": name, "type": "http", "target": target, "statusName": "TIMEOUT"}
     except Exception as e:
-        return {"name": name, "type": "http", "target": target, "status": "failed", "error": str(e)}
+        return {"name": name, "type": "http", "target": target, "statusName": "FAILED", "error": str(e)}
 
 
 def check_dns(name: str, target: str, timeout: float) -> dict:
@@ -42,11 +42,11 @@ def check_dns(name: str, target: str, timeout: float) -> dict:
         socket.setdefaulttimeout(timeout)
         socket.gethostbyname(target)
         return {"name": name, "type": "dns", "target": target,
-                "status": "ok", "latency_ms": (time.monotonic() - t0) * 1000}
+                "statusName": "OK", "latencyMs": (time.monotonic() - t0) * 1000}
     except socket.timeout:
-        return {"name": name, "type": "dns", "target": target, "status": "timeout"}
+        return {"name": name, "type": "dns", "target": target, "statusName": "TIMEOUT"}
     except Exception as e:
-        return {"name": name, "type": "dns", "target": target, "status": "failed", "error": str(e)}
+        return {"name": name, "type": "dns", "target": target, "statusName": "FAILED", "error": str(e)}
 
 
 def check_ping(name: str, target: str, timeout: float) -> dict:
@@ -64,13 +64,13 @@ def check_ping(name: str, target: str, timeout: float) -> dict:
                     except ValueError:
                         pass
             return {"name": name, "type": "ping", "target": target,
-                    "status": "ok", "latency_ms": latency}
-        return {"name": name, "type": "ping", "target": target, "status": "failed"}
+                    "statusName": "OK", "latencyMs": latency}
+        return {"name": name, "type": "ping", "target": target, "statusName": "FAILED"}
     except subprocess.TimeoutExpired:
-        return {"name": name, "type": "ping", "target": target, "status": "timeout"}
+        return {"name": name, "type": "ping", "target": target, "statusName": "TIMEOUT"}
     except FileNotFoundError:
         return {"name": name, "type": "ping", "target": target,
-                "status": "failed", "error": "ping not found"}
+                "statusName": "FAILED", "error": "ping not found"}
 
 
 # ------------------------------------------------------------------

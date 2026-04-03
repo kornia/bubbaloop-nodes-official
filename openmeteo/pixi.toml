@@ -16,4 +16,4 @@ pip = "*"
 eclipse-zenoh = ">=1.0"
 requests = ">=2.31"
 pyyaml = ">=6.0"
-bubbaloop-sdk = { git = "https://github.com/kornia/bubbaloop.git", subdirectory = "python-sdk" }
+bubbaloop-sdk = { path = "/home/nvidia/bubbaloop/python-sdk" }
