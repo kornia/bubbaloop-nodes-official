@@ -4,12 +4,10 @@ type: python
 description: Open-Meteo weather data publisher (JSON)
 author: Bubbaloop Team
 
-command:
-  run: pixi run run -c {config}
+command: pixi run run
 
 capabilities:
   - sensor
-  - weather
 
 publishes:
   - suffix: weather/current

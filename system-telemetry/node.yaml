@@ -4,12 +4,10 @@ type: python
 description: System metrics publisher (CPU, memory, disk, network, load)
 author: Bubbaloop Team
 
-command:
-  run: pixi run run -c {config}
+command: pixi run run
 
 capabilities:
   - sensor
-  - telemetry
 
 publishes:
   - suffix: system-telemetry/metrics
