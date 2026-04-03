@@ -33,7 +33,6 @@ jobs:
             echo "ERROR: nodes.yaml missing"
             exit 1
           fi
-          # Check that all 4 nodes are listed
           for node in rtsp-camera openmeteo system-telemetry network-monitor; do
             if ! grep -q "name: $node" nodes.yaml; then
               echo "ERROR: $node not found in nodes.yaml"
@@ -43,6 +42,34 @@ jobs:
           done
 
   rust-nodes:
+    name: "Build rtsp-camera"
+    runs-on: ubuntu-latest
+    needs: validate
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: prefix-dev/setup-pixi@v0.8.1
+        with:
+          manifest-path: rtsp-camera/pixi.toml
+          cache: true
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: "rtsp-camera -> target"
+
+      - name: Build
+        working-directory: rtsp-camera
+        run: pixi run build
+
+      - name: Clippy
+        working-directory: rtsp-camera
+        run: pixi run -e default cargo clippy --all-targets -- -D warnings
+
+      - name: Test
+        working-directory: rtsp-camera
+        run: pixi run -e default cargo test
+
+  python-nodes:
     name: "Build ${{ matrix.node }}"
     runs-on: ubuntu-latest
     needs: validate
@@ -50,9 +77,9 @@ jobs:
       fail-fast: false
       matrix:
         node:
-          - rtsp-camera
           - openmeteo
           - system-telemetry
+          - network-monitor
     steps:
       - uses: actions/checkout@v4
 
@@ -61,43 +88,6 @@ jobs:
           manifest-path: ${{ matrix.node }}/pixi.toml
           cache: true
 
-      - uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: "${{ matrix.node }} -> target"
-
-      - name: Build
-        working-directory: ${{ matrix.node }}
-        run: pixi run build
-
-      - name: Clippy
-        working-directory: ${{ matrix.node }}
-        run: pixi run -e default cargo clippy --all-targets -- -D warnings
-
-      - name: Test
-        working-directory: ${{ matrix.node }}
-        run: pixi run -e default cargo test
-
-  python-nodes:
-    name: "Build network-monitor"
-    runs-on: ubuntu-latest
-    needs: validate
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: prefix-dev/setup-pixi@v0.8.1
-        with:
-          manifest-path: network-monitor/pixi.toml
-          cache: true
-
-      - name: Install dependencies
-        working-directory: network-monitor
-        run: pixi install
-
-      - name: Build protos
-        working-directory: network-monitor
-        run: pixi run build-proto
-        continue-on-error: true
-
       - name: Syntax check
-        working-directory: network-monitor
+        working-directory: ${{ matrix.node }}
         run: pixi run python -m py_compile main.py

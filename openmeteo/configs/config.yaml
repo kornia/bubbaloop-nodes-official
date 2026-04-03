@@ -1,5 +1,7 @@
 # Instance parameters for openmeteo.
-# Run: ./target/release/openmeteo_node -c config.yaml
+# Run: pixi run run -- -c configs/config.yaml
+
+name: openmeteo
 
 # If no config file is provided, location is auto-discovered from IP
 
