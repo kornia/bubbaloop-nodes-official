@@ -114,7 +114,7 @@ class NetworkMonitorNode:
         log.info("Running %d checks every %.0fs", len(self.checks), self.interval)
         while not self.ctx.is_shutdown():
             checks = self._run_checks()
-            healthy = sum(1 for c in checks if c["status"] == "ok")
+            healthy = sum(1 for c in checks if c.get("statusName") == "OK")
             payload = {
                 "timestamp": datetime.now(timezone.utc).isoformat(),
                 "sequence": self.sequence,
