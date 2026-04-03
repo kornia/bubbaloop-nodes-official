@@ -19,6 +19,14 @@ bubbaloop node add /path/to/node
 
 The daemon reads `node.yaml`, builds if needed, and creates a systemd user service. Registration can also be done via MCP tools from AI agents.
 
+For **multi-instance deployments** (same binary, different configs), register each instance with a unique name:
+```bash
+bubbaloop node add /path/to/node -n tapo-entrance -c configs/entrance.yaml
+bubbaloop node add /path/to/node -n tapo-terrace  -c configs/terrace.yaml
+```
+
+The instance name and config path are tracked separately from the node type name.
+
 ### MCP-First Architecture
 
 The daemon exposes its API as an **MCP (Model Context Protocol) server**. AI agents interact with the daemon exclusively via MCP tools:
@@ -48,31 +56,42 @@ Nodes declare their capabilities in `node.yaml` (see below). The `discover_capab
 
 This allows AI agents to discover "all cameras" or "all inference nodes" without hardcoding node names.
 
-## Health Heartbeat Requirements
+## Health Heartbeat
 
 Every node **MUST** publish heartbeats:
 
 | Field | Value |
 |-------|-------|
-| Topic | `bubbaloop/{scope}/{machine}/health/{name}` |
-| Frequency | At least every 10 seconds (daemon timeout is 30s) |
-| Payload | Simple string: node name or `"alive"` |
-| Transport | Vanilla zenoh `session.put()` -- NOT ros-z, NOT protobuf |
+| Topic | `bubbaloop/{scope}/{machine}/{name}/health` |
+| Frequency | Every 5 seconds (daemon timeout is 30s) |
+| Payload | Simple string `"ok"` |
+| Transport | Vanilla zenoh `session.put()` -- NOT protobuf |
+
+Subscribe to all health topics with: `bubbaloop/**/health`
 
 If heartbeat stops, the daemon marks the node as `UNHEALTHY`.
+
+**If using the Node SDK, health is handled automatically** — you do not write any heartbeat code.
 
 ## Creating a New Node
 
 ### Recommended: Use the Node SDK
 
-The `bubbaloop-node-sdk` crate eliminates ~300 lines of boilerplate per node. Instead of manually setting up Zenoh sessions, health heartbeats, schema queryables, config loading, and signal handling, you implement a `Node` trait:
+The `bubbaloop-node` crate eliminates ~300 lines of boilerplate per node. Instead of manually setting up Zenoh sessions, health heartbeats, schema queryables, config loading, and signal handling, you implement a `Node` trait:
 
 ```rust
-#[async_trait::async_trait]
-impl Node for MySensor {
+use bubbaloop_node::{Node, NodeContext};
+
+struct MySensor { /* ... */ }
+
+#[bubbaloop_node::async_trait::async_trait]
+impl bubbaloop_node::Node for MySensor {
     type Config = Config;
+
     fn name() -> &'static str { "my-sensor" }
-    fn descriptor() -> &'static [u8] { DESCRIPTOR }
+    fn descriptor() -> &'static [u8] {
+        include_bytes!(concat!(env!("OUT_DIR"), "/descriptor.bin"))
+    }
 
     async fn init(ctx: &NodeContext, config: &Config) -> anyhow::Result<Self> {
         // Create publishers, subscribers — SDK provides the session
@@ -80,36 +99,51 @@ impl Node for MySensor {
     }
 
     async fn run(self, ctx: NodeContext) -> anyhow::Result<()> {
-        // Your main loop — select! on shutdown_rx + your logic
+        // Your main loop — select! on ctx.shutdown_rx + your logic
         Ok(())
     }
 }
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    bubbaloop_node_sdk::run_node::<MySensor>().await
+    bubbaloop_node::run_node::<MySensor>().await
 }
 ```
 
-**Cargo.toml dependencies for SDK-based nodes:**
+**Cargo.toml for SDK-based nodes:**
 ```toml
 [dependencies]
-bubbaloop-node-sdk = { git = "https://github.com/kornia/bubbaloop.git", branch = "main" }
-bubbaloop-schemas = { git = "https://github.com/kornia/bubbaloop.git", branch = "main" }
+bubbaloop-node = { git = "https://github.com/kornia/bubbaloop.git", branch = "main" }
+anyhow = "1"
+log = "0.4"
 prost = "0.14"
 serde = { version = "1.0", features = ["derive"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 
 [build-dependencies]
-prost-build = "0.14"
+bubbaloop-node-build = { git = "https://github.com/kornia/bubbaloop.git", branch = "main" }
 
 [workspace]
 ```
 
-The SDK automatically handles: Zenoh session (client mode, scouting disabled), health heartbeat (5s), schema queryable, YAML config loading, SIGINT/SIGTERM, scope/machine_id resolution, and logging.
+**`build.rs` — one line:**
+```rust
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    bubbaloop_node_build::compile_protos(&["protos/my_node.proto"])
+}
+```
+
+The SDK automatically handles: Zenoh session (client mode, scouting disabled), health heartbeat (5s to `{name}/health`), schema queryable (`{name}/schema`), YAML config loading, SIGINT/SIGTERM, scope/machine_id resolution, and logging.
+
+**Instance naming:** The SDK reads the `name` field from the config YAML and uses it as the per-instance name for health and schema topics. This allows multiple instances of the same node type to coexist without topic collisions:
+```yaml
+# configs/entrance.yaml
+name: tapo_entrance          # → health: bubbaloop/local/host/tapo_entrance/health
+publish_topic: camera/tapo_entrance/compressed
+url: "rtsp://..."
+```
 
 ### Step 1: Scaffold with the CLI
-
-Use the bubbaloop CLI to generate boilerplate from official templates:
 
 ```bash
 # Rust node
@@ -121,21 +155,20 @@ bubbaloop node init <name> -t python -d "Description" -o ./<name>
 
 ### Step 2: Adapt the scaffolded code
 
-- Edit `src/node.rs` (Rust) or `main.py` (Python) — implement your logic in `process()`
-- Edit `config.yaml` — add node-specific configuration fields
+- Edit `src/node.rs` (Rust) or `main.py` (Python) — implement your logic
+- Edit `protos/<node>.proto` — define your message types
+- Edit `config.yaml` — add node-specific configuration fields (include a `name` field for multi-instance support)
 - Edit `Cargo.toml` / `pixi.toml` — add dependencies your node needs
-- Edit `node.yaml` — update description, author
+- Edit `node.yaml` — update description, author, capabilities
 
 ### Node Structure Requirements
 
 Every node directory MUST contain:
 - `node.yaml` — **rich manifest** (name, version, type, description, author, build, command, **capabilities**, **publishes**, **subscribes**, **commands**, **requires**)
-- Instance params file (e.g., `config.yaml`) — runtime parameters, passed to binary via `-c`
+- Instance config file (e.g., `config.yaml`) — runtime parameters, passed to binary via `-c`
 - `pixi.toml` — build/run tasks and environment
 
 #### Rich Manifest Format (node.yaml)
-
-The `node.yaml` manifest uses a **rich format** to enable capability-based discovery and runtime introspection. These fields are **EXPECTED**, not optional extras:
 
 ```yaml
 name: rtsp-camera
@@ -150,43 +183,25 @@ build:
 command:
   run: pixi run run -- -c {config}
 
-# REQUIRED: Capabilities enable discovery via MCP tools
 capabilities:
   - sensor
   - camera
 
-# REQUIRED: Publishes section documents output topics
 publishes:
-  - suffix: camera/{name}/raw
-    description: Decoded raw frames (YUV420p)
-    rate_hz: 30.0
   - suffix: camera/{name}/compressed
-    description: JPEG-compressed frames
-    rate_hz: 30.0
+    description: H264-compressed frames
+    rate_hz: 10.0
 
-# Optional: Subscribes section documents input topics
 subscribes: []
 
-# Optional: Commands section documents runtime commands
-commands:
-  - name: snapshot
-    description: Capture a single frame on demand
+commands: []
 
-# REQUIRED: Hardware/software requirements
 requires:
   hardware:
     - GPU with NVDEC support (Jetson or desktop NVIDIA)
   software:
     - GStreamer 1.0+ with nvdec plugin
 ```
-
-**Field descriptions:**
-
-- `capabilities`: List of capability types for discovery (`sensor`, `actuator`, `compute`, `service`, `camera`, `inference`, etc.)
-- `publishes`: List of output topics with suffix (relative to node), description, and rate_hz
-- `subscribes`: List of input topics the node consumes (if any)
-- `commands`: List of runtime commands the node supports via Zenoh queryables (if any)
-- `requires`: Hardware and software dependencies for the node to function
 
 ### Topic Naming Convention
 
@@ -197,254 +212,211 @@ bubbaloop/{scope}/{machine}/{node-name}/{resource}
 ```
 
 Examples:
-- `bubbaloop/local/jetson1/system-telemetry/metrics` (single machine, default scope)
-- `bubbaloop/warehouse-east/dock-1/network-monitor/status` (warehouse deployment)
-- `bubbaloop/barn-north/jetson-a/camera/front/compressed` (farm deployment)
+- `bubbaloop/local/jetson1/system-telemetry/metrics`
+- `bubbaloop/warehouse-east/dock-1/network-monitor/status`
+- `bubbaloop/local/jetson1/tapo_entrance/health`
 
 **Environment variables:**
 
-| Variable | Default | Validation | Purpose |
-|----------|---------|-----------|---------|
-| `BUBBALOOP_SCOPE` | `local` | `^[a-zA-Z0-9_\-\.]+$` (no `/`) | Deployment context (site, fleet, etc.) |
-| `BUBBALOOP_MACHINE_ID` | hostname | `^[a-zA-Z0-9_\-\.]+$` (no `/`) | Machine identifier |
+| Variable | Default | Purpose |
+|----------|---------|---------|
+| `BUBBALOOP_SCOPE` | `local` | Deployment context (site, fleet, etc.) |
+| `BUBBALOOP_MACHINE_ID` | hostname | Machine identifier (hyphens replaced with underscores) |
 
-**Reserved names** (cannot be used as scope or machine_id): `health`, `daemon`, `camera`, `fleet`, `coordination`, `_global`
-
-In `config.yaml`, specify only the topic suffix:
+In `config.yaml`, specify only the topic suffix — the SDK prepends the scoped base:
 ```yaml
-publish_topic: my-node/data   # becomes bubbaloop/{scope}/{machine}/my-node/data
+publish_topic: camera/tapo_entrance/compressed
+# becomes: bubbaloop/{scope}/{machine}/camera/tapo_entrance/compressed
 ```
 
-**Topic categories** use reserved tokens after `{machine}`:
+**Topic categories:**
 
 | Category | Pattern | Example |
 |----------|---------|---------|
 | Node data | `bubbaloop/{scope}/{machine}/{node}/{resource}` | `bubbaloop/local/jetson1/system-telemetry/metrics` |
-| Health | `bubbaloop/{scope}/{machine}/health/{node}` | `bubbaloop/local/jetson1/health/system-telemetry` |
+| Health | `bubbaloop/{scope}/{machine}/{node}/health` | `bubbaloop/local/jetson1/tapo_entrance/health` |
+| Schema | `bubbaloop/{scope}/{machine}/{node}/schema` | `bubbaloop/local/jetson1/tapo_entrance/schema` |
 | Daemon API | `bubbaloop/{scope}/{machine}/daemon/api/{endpoint}` | `bubbaloop/local/jetson1/daemon/api/nodes` |
-| Camera | `bubbaloop/{scope}/{machine}/camera/{name}/{resource}` | `bubbaloop/local/jetson1/camera/front/compressed` |
 | Fleet | `bubbaloop/{scope}/fleet/{action}` | `bubbaloop/warehouse-east/fleet/announce` |
 
-**IMPORTANT:** Validate all topic names against `^[a-zA-Z0-9/_\-\.]+$`. Reject any topic containing characters outside this set.
+Discovery wildcards:
+- All health: `bubbaloop/**/health`
+- All schemas: `bubbaloop/**/schema`
+- All data: `bubbaloop/**`
 
-### Schema Dependency Guide
+### Proto Setup (Rust nodes)
 
-Nodes depend on `bubbaloop-schemas` for the shared `Header` type, but define their own message schemas locally:
+Nodes define their own message schemas in `protos/<node>.proto`. The `Header` type is provided by the SDK — no need to copy `header.proto` locally.
 
-**Rust nodes:**
+**`protos/my_node.proto`:**
+```protobuf
+syntax = "proto3";
+package bubbaloop.my_node.v1;
 
-> **With the Node SDK:** The SDK handles schema queryable registration automatically via `Node::descriptor()`. You still need `build.rs` for proto compilation and `bubbaloop-schemas` for the Header type, but the queryable setup is handled by the SDK.
+import "header.proto";  // resolved automatically by bubbaloop-node-build
 
-1. Add git dependency in `Cargo.toml`:
-   ```toml
-   [dependencies]
-   bubbaloop-schemas = { git = "https://github.com/kornia/bubbaloop.git", branch = "main" }
-   ```
-   **IMPORTANT:** Do NOT add `features = ["ros-z"]` — that feature was removed.
+message MyData {
+  bubbaloop.header.v1.Header header = 1;
+  double value = 2;
+}
+```
 
-2. Copy `header.proto` to local `protos/` directory and create node-specific `.proto` files:
-   ```
-   protos/
-     header.proto          # Shared Header contract
-     rtsp_camera.proto     # Node-specific messages
-   ```
+**`build.rs`:**
+```rust
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    bubbaloop_node_build::compile_protos(&["protos/my_node.proto"])
+}
+```
 
-3. Use `build.rs` to compile protos with `extern_path` so Header comes from the crate:
-   ```rust
-   prost_build::Config::new()
-       .extern_path(".bubbaloop.header.v1", "::bubbaloop_schemas::header::v1")
-       .compile_protos(&["protos/rtsp_camera.proto"], &["protos/"])?;
-   ```
+`bubbaloop-node-build` automatically:
+- Embeds `header.proto` so `import "header.proto"` resolves without a local copy
+- Maps `.bubbaloop.header.v1` → `::bubbaloop_node::schemas::header::v1` (no regeneration)
+- Writes `descriptor.bin` to `OUT_DIR` for schema queryable registration
 
-4. Import generated types in `src/proto.rs`:
-   ```rust
-   include!(concat!(env!("OUT_DIR"), "/bubbaloop.rtsp_camera.v1.rs"));
-   ```
+**`src/proto.rs`:**
+```rust
+include!(concat!(env!("OUT_DIR"), "/bubbaloop.my_node.v1.rs"));
+```
 
-5. Use `Header` from `bubbaloop_schemas`, custom types from `crate::proto`.
+**`src/node.rs`:**
+```rust
+use bubbaloop_node::schemas::header::v1::Header;  // from SDK
+use crate::proto::MyData;                          // generated locally
+```
 
 **Python nodes:**
 1. Copy protos from `bubbaloop-schemas/protos/` to local `protos/` directory.
-2. Use `build_proto.py` to compile protos:
-   ```python
-   protoc --python_out=. --pyi_out=. protos/*.proto
-   ```
-3. Import generated types: `from protos import header_pb2, my_node_pb2`.
+2. Compile: `protoc --python_out=. --pyi_out=. protos/*.proto`
+3. Import: `from protos import header_pb2, my_node_pb2`
 
-**Runtime Discovery:**
-Nodes SHOULD serve a `FileDescriptorSet` via Zenoh queryable at `bubbaloop/{scope}/{machine}/{node}/schema` to enable runtime introspection. This allows tools and AI agents to discover message schemas without accessing proto files.
+**Runtime Schema Discovery:**
+The SDK automatically serves a `FileDescriptorSet` at `{name}/schema` via Zenoh queryable. Pass your compiled descriptor via `Node::descriptor()`:
+```rust
+fn descriptor() -> &'static [u8] {
+    include_bytes!(concat!(env!("OUT_DIR"), "/descriptor.bin"))
+}
+```
 
 ### Conventions
 
 - **Always use protobuf** for message serialization (never raw JSON for data messages)
-- Define node-specific `.proto` files in the node's own `protos/` directory (NOT in `bubbaloop-schemas`)
-- **Self-contained proto pattern** (Rust nodes):
-  - `protos/header.proto` — shared Header contract (imported by node-specific protos)
-  - `protos/<node>.proto` — node-specific messages (e.g., `system_telemetry.proto`, `weather.proto`)
-  - `build.rs` — compiles protos with `extern_path(".bubbaloop.header.v1", "::bubbaloop_schemas::header::v1")` so Header comes from `bubbaloop-schemas` and custom types are generated locally
-  - `src/proto.rs` — `include!(concat!(env!("OUT_DIR"), "/<package>.rs"));` to bring generated types into scope
-  - Import custom types from `crate::proto::` (or `super::proto::` in binary crates), import `Header` from `bubbaloop_schemas`
-- **Rust nodes**: Use **vanilla Zenoh** with `prost` for **ALL** pub/sub (data + health)
-  - Depend on `bubbaloop-schemas = { git = "https://github.com/kornia/bubbaloop.git", branch = "main" }` (for `Header` type only)
-  - Use `zenoh::open()` for connection, `session.declare_publisher()` for publishing, `prost::Message::encode_to_vec()` for serialization
-  - Use `session.declare_subscriber()` for subscribing, `prost::Message::decode()` for deserialization
-  - Health heartbeats use vanilla zenoh (simple string payload), NOT protobuf
-- **Python nodes**: Use vanilla `eclipse-zenoh` with `protobuf` for serialization
-  - Copy protos from `bubbaloop-schemas` and compile via `build_proto.py`
-- Reuse the `Header` message pattern (acq_time, pub_time, sequence, frame_id, machine_id, scope)
-- Publish health heartbeat to `bubbaloop/{scope}/{machine}/health/{name}` every 5 seconds
-- Support graceful shutdown via SIGINT/SIGTERM
+- Define node-specific `.proto` files in `protos/` — do NOT put them in `bubbaloop-schemas`
+- Include a `name` field in `config.yaml` — enables multi-instance deployments and per-instance health/schema topics
+- **Rust nodes**: Use the Node SDK (`bubbaloop-node`) — it handles Zenoh, health, schema, config, and shutdown
+  - Publishers: `ctx.publisher_proto::<MyMsg>("suffix").await?`
+  - JSON publishers: `ctx.publisher_json("suffix").await?`
+  - Subscribers: `ctx.subscriber::<MyMsg>("suffix").await?`
+  - Full topic: `ctx.topic("suffix")` → `bubbaloop/{scope}/{machine}/suffix`
+- **Python nodes**: Use vanilla `eclipse-zenoh` + `protobuf` for serialization
+- Reuse the `Header` message (acq_time, pub_time, sequence, frame_id, machine_id, scope)
+- Support graceful shutdown via SIGINT/SIGTERM (SDK handles this automatically)
 - Accept CLI flags: `-c config.yaml` and `-e tcp/localhost:7447`
-- Use OpenTelemetry Semantic Conventions for metric naming where applicable
-- Never bind network listeners to 0.0.0.0 -- use localhost unless hardware access requires otherwise
+- Never bind network listeners to `0.0.0.0` — use localhost unless hardware requires otherwise
 - Never enable Zenoh multicast or gossip scouting
-- Never store secrets (API keys, passwords) in config.yaml -- use environment variables
-- Validate all external endpoints (URL format, TLS certificates, timeout enforcement)
+- Never store secrets in config files — use environment variables
 
 ## Security Requirements
 
 ### Input Validation (MANDATORY)
 
 - [ ] Topic names: validate against `^[a-zA-Z0-9/_\-\.]+$` -- reject anything else
-- [ ] Config values: enforce min/max bounds for numeric fields (e.g., `rate_hz`: 0.01–1000.0)
+- [ ] Config values: enforce min/max bounds for numeric fields (e.g., `frame_rate`: 1–120)
 - [ ] External endpoints: validate URL format, reject private IP ranges unless explicitly configured
 - [ ] File paths: reject path traversal (no `..`), resolve to absolute paths
 
 ### Network Security (MANDATORY)
 
 - [ ] Zenoh endpoint: accept via `-e` CLI flag, default to `tcp/localhost:7447`
-- [ ] Never bind to 0.0.0.0 -- always localhost unless explicitly configured
-- [ ] Never enable multicast scouting
-- [ ] Never enable gossip scouting
+- [ ] Never bind to `0.0.0.0`
+- [ ] Never enable multicast or gossip scouting
 - [ ] If making external HTTP calls: validate TLS certificates, enforce timeouts
-- [ ] If accepting inbound connections: document the port and protocol in node.yaml
 
 ### Process Security (handled by daemon)
 
-Nodes run as systemd services with these hardening directives:
-- `NoNewPrivileges=true`
-- `ProtectSystem=strict`
-- `PrivateTmp=true`
-- `ProtectKernelTunables=true`
-- `ProtectControlGroups=true`
-- `RestrictRealtime=false` (allows RT scheduling for robotics)
-- `MemoryDenyWriteExecute=false` (allows JIT compilation)
-
-Nodes should not require root privileges. Nodes must handle SIGINT/SIGTERM for graceful shutdown.
-
-### Config Security
-
-- [ ] Never store secrets in config.yaml -- use environment variables
-- [ ] If a node needs API keys, document the expected env var names in node.yaml description
-- [ ] config.yaml is readable by the daemon -- do not assume it is private
+Nodes run as systemd services with: `NoNewPrivileges=true`, `ProtectSystem=strict`, `PrivateTmp=true`. Nodes must handle SIGINT/SIGTERM for graceful shutdown (SDK does this automatically).
 
 ## Testing Locally
 
 ```bash
 cd <node-name>
 pixi run build    # Rust only
-pixi run run      # Run the node
-bubbaloop node add .            # Register with daemon
+pixi run run      # Run the node directly
+
+bubbaloop node add .            # Register with daemon (single instance)
+bubbaloop node add . -n <name> -c configs/<name>.yaml  # Multi-instance
 bubbaloop node start <name>     # Start as service
 bubbaloop node logs <name> -f   # View logs
+bubbaloop node stop <name>      # Stop
 ```
-
-Verify registration and lifecycle via CLI:
-```bash
-bubbaloop node list              # Should list your node
-bubbaloop node start <name>      # Start as service
-bubbaloop node logs <name> -f    # Check logs
-bubbaloop node stop <name>       # Stop
-```
-
-The daemon will mark your node unhealthy if it stops publishing heartbeats for 30 seconds. Check health status in the TUI or via `bubbaloop node list`.
 
 ## Complete Node Checklist
 
 Before submitting a new node, verify ALL items:
 
 ### Structure
-- [ ] `node.yaml` exists with: name, version, type, description, author, build, command
-- [ ] `node.yaml` has **capabilities** field (e.g., `[sensor]`, `[actuator, compute]`)
-- [ ] `node.yaml` has **publishes** field (list of topics with suffix, description, rate_hz)
-- [ ] `node.yaml` has **requires** field (hardware/software requirements)
-- [ ] Instance params file exists (e.g., `config.yaml`) with: publish_topic, rate_hz, and node-specific fields
-- [ ] `pixi.toml` exists with: build and run tasks
+- [ ] `node.yaml` with: name, version, type, description, author, build, command, capabilities, publishes, requires
+- [ ] Config file (e.g., `config.yaml`) with a `name` field and `publish_topic` suffix
+- [ ] `pixi.toml` with build and run tasks
+- [ ] `protos/<node>.proto` with node-specific messages importing `header.proto`
 
 ### Communication
-- [ ] Publishes data via Zenoh to scoped topic: `bubbaloop/{scope}/{machine}/{node-name}/{resource}`
-- [ ] `config.yaml` specifies topic suffix only (no `bubbaloop/{scope}/{machine}/` prefix)
+- [ ] Publishes data to scoped topic: `bubbaloop/{scope}/{machine}/{node-name}/{resource}`
+- [ ] Config specifies topic suffix only (no `bubbaloop/{scope}/{machine}/` prefix)
 - [ ] Uses protobuf serialization for all data messages
-- [ ] Publishes health heartbeat to `bubbaloop/{scope}/{machine}/health/{name}` (vanilla zenoh, not protobuf)
-- [ ] Health heartbeat published **every 5 seconds**
+- [ ] Health heartbeat published to `bubbaloop/{scope}/{machine}/{name}/health` every 5 seconds
+  - (SDK nodes: automatic — just implement the `Node` trait)
+
+### Code (Rust SDK nodes)
+- [ ] `bubbaloop-node` in `[dependencies]`, `bubbaloop-node-build` in `[build-dependencies]`
+- [ ] `build.rs`: `bubbaloop_node_build::compile_protos(&["protos/<node>.proto"])`
+- [ ] `Node::name()` returns the node type name (e.g., `"rtsp-camera"`)
+- [ ] `Node::descriptor()` returns `include_bytes!(concat!(env!("OUT_DIR"), "/descriptor.bin"))`
+- [ ] Config struct has a `name: String` field
+- [ ] `Node::run()` selects on `ctx.shutdown_rx.changed()`
 
 ### Security
 - [ ] Topic names validated: `^[a-zA-Z0-9/_\-\.]+$`
 - [ ] Config numeric values have bounds checking
-- [ ] External endpoints validated (URL format, TLS)
-- [ ] No binding to 0.0.0.0
-- [ ] No multicast or gossip scouting enabled
-- [ ] No secrets in config.yaml
-- [ ] Handles SIGINT/SIGTERM gracefully
-
-### Code
-- [ ] Rust: uses vanilla zenoh with prost for ALL pub/sub (data + health)
-- [ ] Rust: depends on `bubbaloop-schemas = { git = "https://github.com/kornia/bubbaloop.git", branch = "main" }` (NO `features = ["ros-z"]`)
-- [ ] Python: uses `eclipse-zenoh` + `protobuf`, compiles protos via `build_proto.py`
-- [ ] Accepts CLI flags: `-c config.yaml -e tcp/localhost:7447`
-- [ ] Uses `Header` message pattern (acq_time, pub_time, sequence, frame_id, machine_id, scope)
-- [ ] Reads `BUBBALOOP_SCOPE` env var (default: `local`) and `BUBBALOOP_MACHINE_ID` env var (default: hostname)
+- [ ] No binding to `0.0.0.0`, no multicast/gossip scouting, no secrets in config
 
 ### Testing
-- [ ] Rust: config validation has unit tests (`#[cfg(test)]` module) — see `rtsp-camera/src/config.rs` for model
-- [ ] Rust: `cargo test` passes
-- [ ] Python: config loading/validation has tests
-- [ ] CI runs `cargo test` (Rust) and syntax check (Python)
+- [ ] Config validation has unit tests — see `rtsp-camera/src/config.rs` for model
+- [ ] `cargo test` passes
 
 ### Reference
 
-- Existing nodes in this repo: `system-telemetry/` (Rust), `network-monitor/` (Python)
-- `rtsp-camera/` is the compliance reference — only node with full validation tests
+- `rtsp-camera/` is the compliance reference implementation — check it for patterns
 - Bubbaloop plugin development guide: `docs/plugin-development.md` in the bubbaloop repo
 
 ## Testing Workflow
 
-### What to test without Zenoh (unit tests — run in CI)
-
-Config validation is the most valuable test target. Extract config parsing into a testable module:
-
-1. **Config parsing**: YAML deserialization succeeds/fails with valid/invalid input
-2. **Topic validation**: Reject names with special characters (`!`, spaces, etc.)
-3. **Bounds checking**: Reject out-of-range numeric values (rate_hz, width, height, etc.)
-4. **Default values**: Verify defaults are applied when fields are omitted
-
-**Rust**: Add `#[cfg(test)] mod tests` in config module. Model after `rtsp-camera/src/config.rs` (9 tests).
-**Python**: Add `test_config.py` with pytest. Test YAML loading, topic regex, numeric bounds.
-
-### What needs Zenoh (integration tests — run locally)
-
-These require a running `zenohd` router but NOT the daemon:
+### Unit tests (no Zenoh needed — run in CI)
 
 ```bash
-# Start a local Zenoh router
-zenohd --no-multicast-scouting &
+cargo test
+```
 
-# Run the node
+Test config parsing, topic validation, and bounds checking. Model after `rtsp-camera/src/config.rs`.
+
+### Integration tests (requires zenohd)
+
+```bash
+zenohd --no-multicast-scouting &
 pixi run run &
 
-# Verify health heartbeat (should see messages every <=10s)
-z_sub -e tcp/localhost:7447 -k "bubbaloop/local/*/health/*"
+# Verify health heartbeat
+z_sub -e tcp/localhost:7447 -k "bubbaloop/**/health"
 
 # Verify data publishing
 z_sub -e tcp/localhost:7447 -k "bubbaloop/local/*/**"
 
-# Stop
 kill %1 %2
 ```
 
-### What needs the daemon (end-to-end — manual)
+### End-to-end (requires daemon)
 
 ```bash
+bubbaloop doctor                 # Verify system health first
 bubbaloop node add .
 bubbaloop node start <name>
 bubbaloop node list              # Verify status: HEALTHY

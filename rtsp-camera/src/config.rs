@@ -43,18 +43,25 @@ impl Config {
 
     /// Validate configuration values
     pub fn validate(&self) -> Result<(), ConfigError> {
-        // Validate name
-        let name_re = regex_lite::Regex::new(r"^[a-zA-Z0-9_\-\.]+$").unwrap();
-        if !name_re.is_match(&self.name) {
+        // Validate name: [a-zA-Z0-9_\-\.]+
+        if self.name.is_empty()
+            || !self
+                .name
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-' || b == b'.')
+        {
             return Err(ConfigError::ValidationError(format!(
                 "name '{}' contains invalid characters (must match [a-zA-Z0-9_\\-\\.]+)",
                 self.name
             )));
         }
 
-        // Validate publish_topic
-        let topic_re = regex_lite::Regex::new(r"^[a-zA-Z0-9/_\-\.]+$").unwrap();
-        if !topic_re.is_match(&self.publish_topic) {
+        // Validate publish_topic: [a-zA-Z0-9/_\-\.]+
+        if self.publish_topic.is_empty()
+            || !self.publish_topic.bytes().all(|b| {
+                b.is_ascii_alphanumeric() || b == b'/' || b == b'_' || b == b'-' || b == b'.'
+            })
+        {
             return Err(ConfigError::ValidationError(format!(
                 "publish_topic '{}' contains invalid characters (must match [a-zA-Z0-9/_\\-\\.]+)",
                 self.publish_topic

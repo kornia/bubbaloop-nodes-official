@@ -5,6 +5,24 @@ use bubbaloop_node::publisher::ProtoPublisher;
 use bubbaloop_node::schemas::Header;
 use std::sync::Arc;
 
+/// Extract NAL unit types from an H264 byte-stream (Annex B format).
+fn extract_nal_types(data: &[u8]) -> Vec<u8> {
+    let mut nal_types = Vec::new();
+    let mut i = 0;
+    while i + 4 < data.len() {
+        if data[i..i + 4] == [0, 0, 0, 1] {
+            nal_types.push(data[i + 4] & 0x1F);
+            i += 5;
+        } else if data[i..i + 3] == [0, 0, 1] {
+            nal_types.push(data[i + 3] & 0x1F);
+            i += 4;
+        } else {
+            i += 1;
+        }
+    }
+    nal_types
+}
+
 fn get_pub_time() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -32,10 +50,7 @@ fn frame_to_compressed_image(
     }
 }
 
-/// RTSP Camera node — captures a single H264 stream and publishes compressed frames.
-///
-/// Uses the Node SDK's `ProtoPublisher` which sets `Encoding::APPLICATION_PROTOBUF`
-/// with schema suffix `bubbaloop.camera.v1.CompressedImage` automatically.
+/// RTSP Camera node -- captures a single H264 stream and publishes compressed frames.
 pub struct RtspCameraNode {
     config: Config,
 }
@@ -65,10 +80,7 @@ impl bubbaloop_node::Node for RtspCameraNode {
         let camera_name = self.config.name.clone();
         let publish_topic = self.config.publish_topic.clone();
 
-        // Allow RTSP_URL env var to override config
         let url = std::env::var("RTSP_URL").unwrap_or_else(|_| self.config.url.clone());
-
-        // Create H264 capture
         let capture = Arc::new(H264StreamCapture::new(&url, self.config.latency)?);
         capture.start()?;
 
@@ -78,14 +90,11 @@ impl bubbaloop_node::Node for RtspCameraNode {
             self.config.latency
         );
 
-        // Declared publisher with encoding set automatically:
-        // APPLICATION_PROTOBUF;bubbaloop.camera.v1.CompressedImage
         let compressed_pub: ProtoPublisher<CompressedImage> =
             ctx.publisher_proto(&publish_topic).await?;
 
         log::info!("[{}] Publishing to: {}", camera_name, ctx.topic(&publish_topic));
 
-        // Frame rate limiting: track when the next frame should be published.
         // Keyframes are always published to avoid breaking the H264 decode chain.
         let frame_interval = self.config.frame_rate.map(|fps| {
             std::time::Duration::from_secs_f64(1.0 / fps as f64)
@@ -119,15 +128,12 @@ impl bubbaloop_node::Node for RtspCameraNode {
                 result = capture.receiver().recv_async() => {
                     match result {
                         Ok(h264_frame) => {
-                            // Frame rate limiting: skip non-keyframes that arrive before next_frame_time
                             let now = std::time::Instant::now();
                             if let Some(interval) = frame_interval {
                                 if !h264_frame.keyframe && now < next_frame_time {
                                     dropped += 1;
                                     continue;
                                 }
-                                // Advance next_frame_time by interval from the scheduled time
-                                // (not from now) to avoid drift accumulation
                                 next_frame_time = std::cmp::max(
                                     next_frame_time + interval,
                                     now,
@@ -136,22 +142,9 @@ impl bubbaloop_node::Node for RtspCameraNode {
 
                             let sequence = h264_frame.sequence;
 
-                            // Log NAL types for first 150 published frames
-                            if published < 150 {
-                                let data = h264_frame.as_slice();
-                                let mut nal_types = Vec::new();
-                                let mut i = 0;
-                                while i + 4 < data.len() {
-                                    if data[i..i+4] == [0,0,0,1] {
-                                        nal_types.push(data[i+4] & 0x1F);
-                                        i += 5;
-                                    } else if i + 3 < data.len() && data[i..i+3] == [0,0,1] {
-                                        nal_types.push(data[i+3] & 0x1F);
-                                        i += 4;
-                                    } else {
-                                        i += 1;
-                                    }
-                                }
+                            // Log NAL types for early frames to verify stream health
+                            if published < 10 {
+                                let nal_types = extract_nal_types(h264_frame.as_slice());
                                 log::info!(
                                     "[{}] pub={} seq={} size={} keyframe={} NALs={:?}",
                                     camera_name, published, sequence,
@@ -168,7 +161,7 @@ impl bubbaloop_node::Node for RtspCameraNode {
                                 published += 1;
                             }
 
-                            // Log stats with FPS every second
+                            // Periodic FPS stats
                             let elapsed = last_log.elapsed();
                             if elapsed.as_secs() >= 1 {
                                 let frames_this_period = published - last_published_count;
@@ -187,7 +180,6 @@ impl bubbaloop_node::Node for RtspCameraNode {
             }
         }
 
-        // Cleanup
         if let Err(e) = capture.close() {
             log::error!("[{}] Failed to close capture: {}", camera_name, e);
         }
