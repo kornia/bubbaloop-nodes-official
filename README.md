@@ -1,92 +1,167 @@
 # bubbaloop-nodes-official
 
-Official collection of standalone [bubbaloop](https://github.com/kornia/bubbaloop) nodes. Each node is an independent process that registers with the bubbaloop daemon for lifecycle management, health monitoring, and API-driven orchestration.
-
-## What is Bubbaloop?
-
-Bubbaloop is a distributed node orchestration system for Physical AI. **Nodes** are standalone processes that can run on any machine. Each machine runs a **daemon** that manages node lifecycle (start/stop/restart/build), monitors health via heartbeats, and exposes nodes through a Zenoh queryable API. The `bubbaloop` CLI and TUI are the primary user-facing interfaces.
-
-```
-[Machine A]                       [Machine B]
-daemon + nodes  <--- Zenoh --->   daemon + nodes
-       \                                /
-        +------ Zenoh pub/sub ---------+
-                      |
-              [Orchestration App / TUI]
-```
+Official collection of standalone [bubbaloop](https://github.com/kornia/bubbaloop) nodes. Each node is an independent process managed by the bubbaloop daemon for lifecycle management, health monitoring, and AI-driven orchestration.
 
 ## Nodes
 
-| Node | Type | Topic | Description |
-|------|------|-------|-------------|
-| **system-telemetry** | Rust | `.../system-telemetry/metrics` | CPU, memory, disk, network, and load metrics via `sysinfo` |
-| **network-monitor** | Python | `.../network-monitor/status` | HTTP endpoint, DNS resolution, and ICMP ping health checks |
+| Node | Type | Topics | Description |
+|------|------|--------|-------------|
 | **rtsp-camera** | Rust | `.../camera/{name}/compressed` | RTSP camera capture with hardware H264 decode via GStreamer |
-| **openmeteo** | Rust | `.../weather/current`, `hourly`, `daily` | Open-Meteo weather data publisher (current, hourly, daily forecasts) |
+| **system-telemetry** | Python | `.../system-telemetry/metrics` | CPU, memory, disk, network, and load metrics via psutil |
+| **network-monitor** | Python | `.../network-monitor/status` | HTTP, DNS, and ICMP ping health checks |
+| **openmeteo** | Python | `.../weather/current`, `.../weather/hourly`, `.../weather/daily` | Open-Meteo weather publisher (current, 48h hourly, 7-day daily) |
+
 All topics are prefixed with `bubbaloop/{scope}/{machine}/`.
+
+## Quick Start
+
+### Register and run a node
+
+```bash
+# Register, install, and start (three required steps)
+bubbaloop node add /path/to/bubbaloop-nodes-official/system-telemetry \
+  -n system-telemetry \
+  -c /path/to/bubbaloop-nodes-official/system-telemetry/config.yaml
+
+bubbaloop node install system-telemetry   # writes systemd unit file
+bubbaloop node start   system-telemetry   # starts the service
+
+# Verify
+bubbaloop node list
+bubbaloop node logs system-telemetry -f
+```
+
+> **Note:** `node add` alone does NOT create the systemd unit. You must run `node install` before `node start`, or the start will fail with "Unit not found".
+
+### Run locally (no daemon)
+
+**Python nodes:**
+```bash
+cd system-telemetry      # or openmeteo / network-monitor
+pixi run main -c config.yaml
+```
+
+**Rust nodes:**
+```bash
+cd rtsp-camera
+pixi run build
+pixi run main -c configs/entrance.yaml
+```
+
+### Manage via CLI
+
+```bash
+bubbaloop node list                       # list registered nodes + health
+bubbaloop node start   system-telemetry
+bubbaloop node stop    system-telemetry
+bubbaloop node restart system-telemetry
+bubbaloop node logs    system-telemetry -f
+bubbaloop node stop    system-telemetry && \
+  bubbaloop node uninstall system-telemetry && \
+  bubbaloop node install   system-telemetry && \
+  bubbaloop node start     system-telemetry  # force-regenerate systemd unit
+```
 
 ## Node Lifecycle
 
-| Stage | CLI Command | Zenoh API (daemon) |
-|-------|-------------|--------------------|
-| Scaffold | `bubbaloop node init <name> -t rust` | — |
-| Register | `bubbaloop node add /path/to/node` | `{scope}/{mid}/daemon/api/nodes/add` `{"node_path": "..."}` |
-| Build | `bubbaloop node build <name>` | `{scope}/{mid}/daemon/api/nodes/{name}/command` `{"command": "build"}` |
-| Start | `bubbaloop node start <name>` | `{scope}/{mid}/daemon/api/nodes/{name}/command` `{"command": "start"}` |
-| Running | — (publishes heartbeats) | `{scope}/{mid}/daemon/api/nodes/{name}` (query status) |
-| Stop | `bubbaloop node stop <name>` | `{scope}/{mid}/daemon/api/nodes/{name}/command` `{"command": "stop"}` |
-| Logs | `bubbaloop node logs <name> -f` | `{scope}/{mid}/daemon/api/nodes/{name}/logs` |
+Three steps are always required:
 
-All Zenoh paths are prefixed with `bubbaloop/` (e.g., `bubbaloop/local/jetson1/daemon/api/nodes`). The daemon has no HTTP server -- all API access is via Zenoh queryables. The CLI wraps these for convenience.
+| Step | Command | What it does |
+|------|---------|--------------|
+| **Add** | `bubbaloop node add <path> -n <name> -c <config>` | Registers path + config in `~/.bubbaloop/nodes.json` |
+| **Install** | `bubbaloop node install <name>` | Writes the systemd user service unit file |
+| **Start** | `bubbaloop node start <name>` | `systemctl --user start bubbaloop-<name>.service` |
 
-**Full command set:** `start`, `stop`, `restart`, `build`, `clean`, `install`, `uninstall`, `enable_autostart`, `disable_autostart`, `remove`
-
-## Node Configuration (Two-Tier YAML)
-
-Each node uses two YAML files:
-
-| File | Purpose | Cardinality |
-|------|---------|-------------|
-| `node.yaml` | **Node manifest** -- identity and build/run commands | One per node type |
-| Instance params (e.g., `config.yaml`) | **Runtime parameters** -- URLs, topics, intervals | One per deployment instance |
-
-**`node.yaml`** declares the node type for the daemon (lives at the node root):
-
-```yaml
-name: rtsp-camera
-version: "0.1.0"
-description: "RTSP camera capture with H264 decode"
-type: rust
-build: "pixi run build"
-command: "./target/release/cameras_node"
-```
-
-**Instance params** control how a specific instance behaves (passed via `-c`):
-
-```yaml
-# rtsp-camera/configs/entrance.yaml
-name: entrance
-publish_topic: camera/entrance/compressed
-url: "rtsp://user:pass@host:554/stream"
-latency: 200
-decoder: cpu
-width: 224
-height: 224
-```
-
-The filename is not fixed -- each deployment can have multiple param files (e.g., `entrance.yaml`, `terrace.yaml`). The `configs/` directory contains examples.
-
-**`bubbaloop launch`** ties them together by creating a named instance from a node type + params file:
+For multi-instance deployments (same binary, different configs), register each instance with a unique name:
 
 ```bash
-bubbaloop launch rtsp-camera my-launch.yaml --install --start
+bubbaloop node add /path/to/rtsp-camera -n tapo-entrance -c configs/entrance.yaml
+bubbaloop node install tapo-entrance && bubbaloop node start tapo-entrance
+
+bubbaloop node add /path/to/rtsp-camera -n tapo-terrace  -c configs/terrace.yaml
+bubbaloop node install tapo-terrace  && bubbaloop node start tapo-terrace
 ```
 
-The launch YAML wraps instance params under a `config:` key with an instance `name:`. The daemon writes this to `~/.bubbaloop/configs/<instance-name>.yaml`.
+## Node SDKs
+
+### Rust SDK (`bubbaloop-node`)
+
+Reduces node boilerplate from ~300 to ~50 lines. Handles Zenoh session, health heartbeats, schema queryable, config loading, and graceful shutdown automatically.
+
+```toml
+[dependencies]
+bubbaloop-node = { git = "https://github.com/kornia/bubbaloop.git", branch = "main" }
+
+[build-dependencies]
+bubbaloop-node-build = { git = "https://github.com/kornia/bubbaloop.git", branch = "main" }
+```
+
+```rust
+use bubbaloop_node::{Node, NodeContext};
+
+struct MySensor { pub_data: bubbaloop_node::JsonPublisher }
+
+#[bubbaloop_node::async_trait::async_trait]
+impl Node for MySensor {
+    type Config = serde_yaml::Value;
+    fn name() -> &'static str { "my-sensor" }
+    fn descriptor() -> &'static [u8] {
+        include_bytes!(concat!(env!("OUT_DIR"), "/descriptor.bin"))
+    }
+    async fn init(ctx: &NodeContext, _cfg: &Self::Config) -> anyhow::Result<Self> {
+        Ok(Self { pub_data: ctx.publisher_json("my-sensor/data").await? })
+    }
+    async fn run(self, ctx: NodeContext) -> anyhow::Result<()> {
+        loop {
+            tokio::select! {
+                _ = ctx.shutdown_rx.clone().changed() => break,
+                _ = tokio::time::sleep(std::time::Duration::from_secs(1)) => {
+                    self.pub_data.put(serde_json::json!({"value": 42}))?;
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
+#[tokio::main]
+async fn main() -> anyhow::Result<()> {
+    bubbaloop_node::run_node::<MySensor>().await
+}
+```
+
+### Python SDK (`bubbaloop-sdk`)
+
+Pure Python wrapper with the same API as the Rust SDK. Install via pixi:
+
+```toml
+# pixi.toml
+[pypi-dependencies]
+bubbaloop-sdk = { git = "https://github.com/kornia/bubbaloop.git", branch = "main", subdirectory = "python-sdk" }
+```
+
+```python
+from bubbaloop_sdk import run_node
+
+class MySensor:
+    name = "my-sensor"
+
+    def __init__(self, ctx, config: dict):
+        self.pub = ctx.publisher_json("my-sensor/data")
+
+    def run(self):
+        import time
+        while not self.ctx.is_shutdown():
+            self.pub.put({"value": 42})
+            self.ctx._shutdown.wait(timeout=1.0)
+
+if __name__ == "__main__":
+    run_node(MySensor)
+```
+
+**JSON field naming:** publish snake_case — the dashboard applies `snakeToCamel()` automatically. Publish `usage_percent`, `bytes_sent`, `wind_speed_10m` and the dashboard sees `usagePercent`, `bytesSent`, `windSpeed_10m`.
 
 ## Topic Convention
-
-All topics follow a scoped hierarchy:
 
 ```
 bubbaloop/{scope}/{machine}/{node-name}/{resource}
@@ -94,125 +169,97 @@ bubbaloop/{scope}/{machine}/{node-name}/{resource}
 
 | Variable | Default | Purpose |
 |----------|---------|---------|
-| `BUBBALOOP_SCOPE` | `local` | Deployment context (e.g., `warehouse-east`, `barn-north`, `fleet-alpha`) |
-| `BUBBALOOP_MACHINE_ID` | hostname | Machine identifier |
+| `BUBBALOOP_SCOPE` | `local` | Deployment context (`warehouse-east`, `farm-north`, etc.) |
+| `BUBBALOOP_MACHINE_ID` | hostname | Machine identifier (hyphens replaced with `_`) |
 
-Health heartbeats: `bubbaloop/{scope}/{machine}/health/{name}`. The daemon marks a node unhealthy if no heartbeat is received for 30 seconds.
+**Special topics:**
 
-## Multi-Machine Deployment
+| Topic | Purpose |
+|-------|---------|
+| `bubbaloop/{scope}/{machine}/{name}/health` | Heartbeat (every 5s, SDK handles automatically) |
+| `bubbaloop/{scope}/{machine}/{name}/schema` | Protobuf FileDescriptorSet queryable |
 
-Each machine runs its own daemon with its own `machine_id`. Set `BUBBALOOP_SCOPE` to group machines by deployment context. Topics are scoped (`bubbaloop/{scope}/{machine}/...`), so nodes on different machines publish to separate namespaces. Machines communicate via Zenoh peer-to-peer (no central broker required).
+**Discovery wildcards:**
+- All data: `bubbaloop/**`
+- All health: `bubbaloop/**/health`
+- All schemas: `bubbaloop/**/schema`
 
-**Examples:**
-- Warehouse: `BUBBALOOP_SCOPE=warehouse-east` on each dock Jetson
-- Farm: `BUBBALOOP_SCOPE=barn-north` / `barn-south` per barn
-- Fleet: `BUBBALOOP_SCOPE=fleet-alpha` on each vehicle
+## node.yaml Manifest
 
-For secure cross-machine communication, use **Tailscale** or **WireGuard** to create a private overlay network.
+Every node directory must contain a `node.yaml` with a flat `command:` string:
 
-## Security
+```yaml
+name: system-telemetry
+version: "0.2.0"
+type: python
+description: System metrics publisher (CPU, memory, disk, network, load)
+author: Bubbaloop Team
 
-| Layer | Measures |
-|-------|----------|
-| **Network** | Zenoh listens on localhost only. Multicast and gossip scouting disabled. Use Tailscale/WireGuard for multi-machine. TLS for external endpoints. |
-| **Process** | systemd hardening: `NoNewPrivileges=true`, `ProtectSystem=strict`, `PrivateTmp=true`, `ProtectKernelTunables=true`, `ProtectControlGroups=true` |
-| **Input** | Topic names must match `[a-zA-Z0-9/_\-.]`. Config values must have bounds. External endpoints validated. |
+command: pixi run main     # daemon appends: -c /abs/path/to/config.yaml
 
-See [CLAUDE.md](CLAUDE.md) for detailed security checklist when creating nodes.
+capabilities:
+  - sensor                 # valid values: sensor | actuator | processor | gateway
 
-## Shared Schemas
-
-All protobuf definitions live in the `bubbaloop-schemas` crate (`~/bubbaloop/crates/bubbaloop-schemas/protos/`), the single source of truth:
-
-- **Rust nodes** depend on it via git: `bubbaloop-schemas = { git = "https://github.com/kornia/bubbaloop.git", branch = "main" }`
-- **Python nodes** compile from its `.proto` sources via `build_proto.py`
-
-## Quick Start
-
-### Install a single node
-
-```bash
-# From GitHub (recommended)
-bubbaloop node add kornia/bubbaloop-nodes-official --subdir rtsp-camera
-
-# From local clone
-bubbaloop node add /path/to/bubbaloop-nodes-official --subdir rtsp-camera
+publishes:
+  - suffix: system-telemetry/metrics
+    description: "CPU, memory, disk, network, load average"
+    encoding: application/json
+    rate_hz: 1.0
 ```
 
-### Build and run locally
+> `command:` must be a **flat string** — NOT a nested map. The daemon appends `-c <config>` automatically.
 
-**Rust (system-telemetry):**
-```bash
-cd system-telemetry
-pixi run build
-pixi run run
+## Configuration
+
+Each node has a `config.yaml` passed via `-c`. Include a `name` field for per-instance health/schema topics:
+
+```yaml
+# system-telemetry/config.yaml
+name: system-telemetry
+publish_topic: system-telemetry/metrics
+rate_hz: 1.0
 ```
 
-**Python (network-monitor):**
-```bash
-cd network-monitor
-pixi run build-proto   # Compile .proto -> Python modules
-pixi run run
+For multi-instance nodes (rtsp-camera), the `name` field drives topic namespacing:
+
+```yaml
+# rtsp-camera/configs/entrance.yaml
+name: tapo_entrance    # → health: bubbaloop/local/host/tapo_entrance/health
+publish_topic: camera/tapo_entrance/compressed
+url: "rtsp://..."
 ```
 
-### Manage via CLI
+## Creating New Nodes
+
+See [CLAUDE.md](CLAUDE.md) for full instructions. Quick scaffold:
 
 ```bash
-bubbaloop node list                       # List registered nodes
-bubbaloop node start system-telemetry     # Start a node
-bubbaloop node logs system-telemetry -f   # Check logs
-bubbaloop node stop system-telemetry      # Stop a node
+# Python node
+bubbaloop node init my-sensor -t python -d "My sensor" -o ./my-sensor
+
+# Rust node
+bubbaloop node init my-sensor -t rust -d "My sensor" -o ./my-sensor
 ```
 
-## Adding to TUI Marketplace
-
-Add this repository as a Marketplace source to discover nodes in the bubbaloop TUI:
-
-```bash
-bubbaloop node add /home/nvidia/bubbaloop-nodes-official
-```
-
-All nodes will appear in the **Discover** tab.
+Reference implementations:
+- **Rust**: `rtsp-camera/` — protobuf, multi-instance, GPU hardware
+- **Python**: `system-telemetry/` — JSON, psutil, 1Hz; `openmeteo/` — JSON, HTTP polling
 
 ## Architecture
 
 ```
 Machine (e.g., Jetson Orin)
-+-----------------------------------------+
-|  bubbaloop daemon                       |
-|  |- Zenoh API: {scope}/{mid}/daemon/api/*|
-|  |- Health monitor (30s timeout)        |
-|  |                                      |
-|  +-- system-telemetry (systemd service) |
-|  +-- network-monitor  (systemd service) |
-|  +-- your-node         (systemd service)|
-+-----------------------------------------+
-      |  Zenoh pub/sub (localhost / Tailscale)
-      v
-[Other machines / Orchestration apps / TUI]
-```
-
-```
-bubbaloop/crates/bubbaloop-schemas/  # Shared proto crate (in bubbaloop repo)
-├── protos/                          # .proto source files
-└── src/lib.rs                       # Compiled Rust types
-
-bubbaloop-nodes-official/
-├── system-telemetry/        # Rust node (sysinfo metrics)
-├── network-monitor/         # Python node (HTTP/DNS/ping)
-├── rtsp-camera/             # Rust node (GStreamer H264 capture)
-├── openmeteo/               # Rust node (weather API)
-└── nodes.yaml               # Node registry for marketplace
-```
-
-## Creating New Nodes
-
-See [CLAUDE.md](CLAUDE.md) for instructions on creating new nodes in this repository.
-
-```bash
-# Scaffold a new Rust node
-bubbaloop node init my-sensor -t rust -d "My custom sensor" -o ./my-sensor
-
-# Scaffold a new Python node
-bubbaloop node init my-sensor -t python -d "My custom sensor" -o ./my-sensor
++------------------------------------------------+
+|  bubbaloop daemon                              |
+|  ├── Zenoh API: {scope}/{mid}/daemon/api/*     |
+|  ├── Health monitor (30s timeout per node)     |
+|  │                                             |
+|  ├── rtsp-camera    (systemd service, Rust)    |
+|  ├── system-telemetry (systemd service, Python)|
+|  ├── network-monitor  (systemd service, Python)|
+|  └── openmeteo        (systemd service, Python)|
++------------------------------------------------+
+        │  Zenoh pub/sub (localhost / Tailscale)
+        ▼
+[Dashboard / AI Agent / Other machines]
 ```
