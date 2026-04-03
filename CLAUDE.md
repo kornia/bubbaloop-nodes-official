@@ -190,7 +190,7 @@ description: RTSP camera capture with H.264/H.265 decoding and optional JPEG com
 author: Edgar Riba <edgar@kornia.org>
 
 build: pixi run build        # flat string — NOT "build:\n  command: ..."
-command: pixi run run        # daemon appends: -c /path/to/config.yaml
+command: pixi run main        # daemon appends: -c /path/to/config.yaml
 
 capabilities:
   - sensor                   # ONLY: sensor | actuator | processor | gateway
@@ -216,7 +216,7 @@ type: python
 description: System metrics publisher (CPU, memory, disk, network, load)
 author: Bubbaloop Team
 
-command: pixi run run        # pixi task wraps: python main.py
+command: pixi run main        # pixi task wraps: python main.py
 
 capabilities:
   - sensor
@@ -374,7 +374,7 @@ Nodes run as systemd services with: `NoNewPrivileges=true`, `ProtectSystem=stric
 ```bash
 cd <node-name>
 pixi run build              # Rust only — Python nodes have no build step
-pixi run run -c config.yaml # Run directly for quick iteration
+pixi run main -c config.yaml # Run directly for quick iteration
 ```
 
 ### Register with daemon (three-step flow)
@@ -401,7 +401,7 @@ bubbaloop node stop <name>       # stop when done
 Before submitting a new node, verify ALL items:
 
 ### node.yaml
-- [ ] `command:` is a **flat string** (e.g., `command: pixi run run`) — NOT a nested map
+- [ ] `command:` is a **flat string** (e.g., `command: pixi run main`) — NOT a nested map
 - [ ] `capabilities:` only contains `sensor`, `actuator`, `processor`, or `gateway`
 - [ ] `build:` is a flat string or absent (Python nodes don't need it)
 - [ ] `publishes[].encoding` is `application/json` or `application/protobuf`
@@ -450,7 +450,7 @@ Test config parsing, topic validation, and bounds checking. Model after `rtsp-ca
 
 ```bash
 zenohd --no-multicast-scouting &
-pixi run run &
+pixi run main &
 
 # Verify health heartbeat
 z_sub -e tcp/localhost:7447 -k "bubbaloop/**/health"

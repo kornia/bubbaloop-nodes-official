@@ -6,7 +6,7 @@ channels = ["conda-forge"]
 platforms = ["linux-64", "linux-aarch64"]
 
 [tasks]
-run = { cmd = "python main.py" }
+main = "python main.py"
 
 [dependencies]
 python = ">=3.11"

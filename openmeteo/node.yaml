@@ -4,7 +4,7 @@ type: python
 description: Open-Meteo weather data publisher (JSON)
 author: Bubbaloop Team
 
-command: pixi run run
+command: pixi run main
 
 capabilities:
   - sensor
