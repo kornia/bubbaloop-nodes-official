@@ -1,35 +1,34 @@
 name: openmeteo
-version: "0.1.0"
-type: rust
-description: Open-Meteo weather data publisher
+version: "0.2.0"
+type: python
+description: Open-Meteo weather data publisher (JSON)
 author: Bubbaloop Team
-build: pixi run build
-command: ./target/release/openmeteo_node
+
+command:
+  run: pixi run run -- -c {config}
 
 capabilities:
   - sensor
+  - weather
 
 publishes:
   - suffix: weather/current
-    description: "Current weather conditions (temperature, humidity, wind, precipitation, pressure)"
-    schema_type: "bubbaloop.weather.v1.CurrentWeather"
+    description: "Current weather conditions — temperature, humidity, wind, precipitation, pressure"
+    encoding: application/json
     rate_hz: 0.033
 
   - suffix: weather/hourly
     description: "Hourly weather forecast (48 hours by default)"
-    schema_type: "bubbaloop.weather.v1.HourlyForecast"
+    encoding: application/json
     rate_hz: 0.00056
 
   - suffix: weather/daily
     description: "Daily weather forecast (7 days by default)"
-    schema_type: "bubbaloop.weather.v1.DailyForecast"
+    encoding: application/json
     rate_hz: 0.00009
-
-subscribes:
-  - suffix: weather/config/location
-    description: "Location updates for changing weather query coordinates"
-    schema_type: "bubbaloop.weather.v1.LocationConfig"
 
 requires:
   hardware:
     - network
+  software:
+    - Python 3.11+
