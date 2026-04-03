@@ -1,8 +1,9 @@
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // Resolve the SDK protos directory from the DEP_ metadata set by bubbaloop-node's build.rs,
-    // falling back to the CARGO_MANIFEST_DIR-relative local copy for reproducibility.
+    // DEP_BUBBALOOP_NODE_PROTOS_DIR is set by the bubbaloop-node build script
+    // (via `links = "bubbaloop-node"` in its Cargo.toml). This lets us import
+    // header.proto from the SDK without keeping a local copy.
     let sdk_protos = std::env::var("DEP_BUBBALOOP_NODE_PROTOS_DIR")
-        .unwrap_or_else(|_| "protos".to_string());
+        .expect("DEP_BUBBALOOP_NODE_PROTOS_DIR not set — check bubbaloop-node links field");
 
     let out_dir = std::path::PathBuf::from(std::env::var("OUT_DIR")?);
 
