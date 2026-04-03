@@ -34,7 +34,7 @@ environments:
       - conda: https://conda.anaconda.org/conda-forge/linux-64/tk-8.6.13-noxft_h366c992_103.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/tzdata-2025c-hc9c84f9_1.conda
       - conda: https://conda.anaconda.org/conda-forge/linux-64/zstd-1.5.7-hb78ec9c_6.conda
-      - pypi: git+https://github.com/kornia/bubbaloop.git?subdirectory=python-sdk&branch=feat%2Fencoding-first-decode#e1fe85cc70a191e9e64972caf2ebde1f2171a468
+      - pypi: git+https://github.com/kornia/bubbaloop.git?subdirectory=python-sdk&branch=main#624da854fd9c487bafe9af6ae634d14e057016a1
       - pypi: https://files.pythonhosted.org/packages/c6/f9/22883e613eb193f8f956e8e96d8f16e39b369dac4ade7aa3b37f344ddc62/eclipse_zenoh-1.8.0.tar.gz
       - pypi: https://files.pythonhosted.org/packages/53/1b/3b431694a4dc6d37b9f653f0c64b0a0d9ec074ee810710c0c3da21d67ba7/protobuf-7.34.1-cp310-abi3-manylinux2014_x86_64.whl
       - pypi: https://files.pythonhosted.org/packages/b5/70/5d8df3b09e25bce090399cf48e452d25c935ab72dad19406c77f4e828045/psutil-7.2.2-cp36-abi3-manylinux2010_x86_64.manylinux_2_12_x86_64.manylinux_2_28_x86_64.whl
@@ -64,7 +64,7 @@ environments:
       - conda: https://conda.anaconda.org/conda-forge/linux-aarch64/tk-8.6.13-noxft_h0dc03b3_103.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/tzdata-2025c-hc9c84f9_1.conda
       - conda: https://conda.anaconda.org/conda-forge/linux-aarch64/zstd-1.5.7-h85ac4a6_6.conda
-      - pypi: git+https://github.com/kornia/bubbaloop.git?subdirectory=python-sdk&branch=feat%2Fencoding-first-decode#e1fe85cc70a191e9e64972caf2ebde1f2171a468
+      - pypi: git+https://github.com/kornia/bubbaloop.git?subdirectory=python-sdk&branch=main#624da854fd9c487bafe9af6ae634d14e057016a1
       - pypi: https://files.pythonhosted.org/packages/cf/ba/7bb452da75a6c3d40d512112e90aa9942996466051ebfb038c6dc41ed302/eclipse_zenoh-1.8.0-cp39-abi3-manylinux_2_28_aarch64.whl
       - pypi: https://files.pythonhosted.org/packages/eb/9d/aa69df2724ff63efa6f72307b483ce0827f4347cc6d6df24b59e26659fef/protobuf-7.34.1-cp310-abi3-manylinux2014_aarch64.whl
       - pypi: https://files.pythonhosted.org/packages/63/65/37648c0c158dc222aba51c089eb3bdfa238e621674dc42d48706e639204f/psutil-7.2.2-cp36-abi3-manylinux2014_aarch64.manylinux_2_17_aarch64.manylinux_2_28_aarch64.whl
@@ -104,7 +104,7 @@ packages:
   purls: []
   size: 23712
   timestamp: 1650670790230
-- pypi: git+https://github.com/kornia/bubbaloop.git?subdirectory=python-sdk&branch=feat%2Fencoding-first-decode#e1fe85cc70a191e9e64972caf2ebde1f2171a468
+- pypi: git+https://github.com/kornia/bubbaloop.git?subdirectory=python-sdk&branch=main#624da854fd9c487bafe9af6ae634d14e057016a1
   name: bubbaloop-sdk
   version: 0.1.0
   requires_dist:
