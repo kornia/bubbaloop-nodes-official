@@ -1,7 +1,7 @@
 [build]
 target-dir = "target"
 
-# Local development override — remove before publishing
+# Local development override — remove after bubbaloop PR #64 merges to main
 [patch."https://github.com/kornia/bubbaloop.git"]
 bubbaloop-node = { path = "/home/nvidia/bubbaloop/crates/bubbaloop-node" }
 bubbaloop-node-build = { path = "/home/nvidia/bubbaloop/crates/bubbaloop-node-build" }
