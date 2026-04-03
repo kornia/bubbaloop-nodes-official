@@ -28,12 +28,12 @@ def check_http(name: str, target: str, timeout: float) -> dict:
     try:
         r = requests.get(target, timeout=timeout)
         return {"name": name, "type": "http", "target": target,
-                "statusName": "OK", "latencyMs": r.elapsed.total_seconds() * 1000,
-                "statusCode": r.status_code}
+                "status_name": "OK", "latency_ms": r.elapsed.total_seconds() * 1000,
+                "status_code": r.status_code}
     except requests.Timeout:
-        return {"name": name, "type": "http", "target": target, "statusName": "TIMEOUT"}
+        return {"name": name, "type": "http", "target": target, "status_name": "TIMEOUT"}
     except Exception as e:
-        return {"name": name, "type": "http", "target": target, "statusName": "FAILED", "error": str(e)}
+        return {"name": name, "type": "http", "target": target, "status_name": "FAILED", "error": str(e)}
 
 
 def check_dns(name: str, target: str, timeout: float) -> dict:
@@ -42,11 +42,11 @@ def check_dns(name: str, target: str, timeout: float) -> dict:
         socket.setdefaulttimeout(timeout)
         socket.gethostbyname(target)
         return {"name": name, "type": "dns", "target": target,
-                "statusName": "OK", "latencyMs": (time.monotonic() - t0) * 1000}
+                "status_name": "OK", "latency_ms": (time.monotonic() - t0) * 1000}
     except socket.timeout:
-        return {"name": name, "type": "dns", "target": target, "statusName": "TIMEOUT"}
+        return {"name": name, "type": "dns", "target": target, "status_name": "TIMEOUT"}
     except Exception as e:
-        return {"name": name, "type": "dns", "target": target, "statusName": "FAILED", "error": str(e)}
+        return {"name": name, "type": "dns", "target": target, "status_name": "FAILED", "error": str(e)}
 
 
 def check_ping(name: str, target: str, timeout: float) -> dict:
@@ -64,13 +64,13 @@ def check_ping(name: str, target: str, timeout: float) -> dict:
                     except ValueError:
                         pass
             return {"name": name, "type": "ping", "target": target,
-                    "statusName": "OK", "latencyMs": latency}
-        return {"name": name, "type": "ping", "target": target, "statusName": "FAILED"}
+                    "status_name": "OK", "latency_ms": latency}
+        return {"name": name, "type": "ping", "target": target, "status_name": "FAILED"}
     except subprocess.TimeoutExpired:
-        return {"name": name, "type": "ping", "target": target, "statusName": "TIMEOUT"}
+        return {"name": name, "type": "ping", "target": target, "status_name": "TIMEOUT"}
     except FileNotFoundError:
         return {"name": name, "type": "ping", "target": target,
-                "statusName": "FAILED", "error": "ping not found"}
+                "status_name": "FAILED", "error": "ping not found"}
 
 
 # ------------------------------------------------------------------
@@ -114,7 +114,7 @@ class NetworkMonitorNode:
         log.info("Running %d checks every %.0fs", len(self.checks), self.interval)
         while not self.ctx.is_shutdown():
             checks = self._run_checks()
-            healthy = sum(1 for c in checks if c.get("statusName") == "OK")
+            healthy = sum(1 for c in checks if c.get("status_name") == "OK")
             payload = {
                 "timestamp": datetime.now(timezone.utc).isoformat(),
                 "sequence": self.sequence,

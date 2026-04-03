@@ -327,7 +327,7 @@ fn descriptor() -> &'static [u8] {
 **Serialization:**
 - **High-frequency / binary data** (cameras, sensors >1Hz): use protobuf (`APPLICATION_PROTOBUF`)
 - **Low-frequency / structured data** (telemetry, weather, network checks ≤1Hz): use JSON (`APPLICATION_JSON`) — simpler, no build step, dashboard decodes natively
-- JSON field names must use **camelCase matching the dashboard's SchemaRegistry convention**: `_[a-z]` → uppercase, digits left alone. So `wind_speed_10m` → `windSpeed_10m`, `temperature_2m` stays `temperature_2m`. See `openmeteo/main.py::_snake_to_camel` for reference.
+- JSON field names should use **snake_case** — the dashboard applies `snakeToCamel()` automatically on JSON decode, the same transform used for protobuf. Publish `wind_speed_10m`, `bytes_sent`, `usage_percent` etc. and the dashboard receives `windSpeed_10m`, `bytesSent`, `usagePercent`.
 
 **Config:**
 - Include a `name` field in `config.yaml` — SDK uses it for per-instance health/schema topics
@@ -412,7 +412,7 @@ Before submitting a new node, verify ALL items:
 
 ### Communication
 - [ ] Health heartbeat at `bubbaloop/{scope}/{machine}/{name}/health` every 5s (SDK: automatic)
-- [ ] JSON nodes: field names in camelCase (`windSpeed_10m`, not `wind_speed_10m`)
+- [ ] JSON nodes: field names in snake_case (`wind_speed_10m`, `bytes_sent`) — dashboard applies snakeToCamel automatically
 - [ ] All Zenoh connections use `mode: "client"` — never peer mode
 
 ### Code (Rust SDK nodes)
