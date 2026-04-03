@@ -85,10 +85,27 @@ impl bubbaloop_node::Node for RtspCameraNode {
 
         log::info!("[{}] Publishing to: {}", camera_name, ctx.topic(&publish_topic));
 
+        // Frame rate limiting: track when the next frame should be published.
+        // Keyframes are always published to avoid breaking the H264 decode chain.
+        let frame_interval = self.config.frame_rate.map(|fps| {
+            std::time::Duration::from_secs_f64(1.0 / fps as f64)
+        });
+
+        if let Some(interval) = frame_interval {
+            log::info!(
+                "[{}] Frame rate limit: {} fps (interval: {:.1}ms)",
+                camera_name,
+                self.config.frame_rate.unwrap(),
+                interval.as_secs_f64() * 1000.0
+            );
+        }
+
         let mut shutdown_rx = ctx.shutdown_rx.clone();
         let mut published: u64 = 0;
+        let mut dropped: u64 = 0;
         let mut last_log = std::time::Instant::now();
         let mut last_published_count: u64 = 0;
+        let mut next_frame_time = std::time::Instant::now();
 
         loop {
             tokio::select! {
@@ -102,29 +119,22 @@ impl bubbaloop_node::Node for RtspCameraNode {
                 result = capture.receiver().recv_async() => {
                     match result {
                         Ok(h264_frame) => {
-                            let sequence = h264_frame.sequence;
-                            // Log NAL types for first 5 frames to debug keyframe detection
-                            if sequence < 5 {
-                                let data = h264_frame.as_slice();
-                                let mut nal_types = Vec::new();
-                                let mut i = 0;
-                                while i + 4 < data.len() {
-                                    if data[i..i+4] == [0,0,0,1] {
-                                        nal_types.push(data[i+4] & 0x1F);
-                                        i += 5;
-                                    } else if i + 3 < data.len() && data[i..i+3] == [0,0,1] {
-                                        nal_types.push(data[i+3] & 0x1F);
-                                        i += 4;
-                                    } else {
-                                        i += 1;
-                                    }
+                            // Frame rate limiting: skip non-keyframes that arrive before next_frame_time
+                            let now = std::time::Instant::now();
+                            if let Some(interval) = frame_interval {
+                                if !h264_frame.keyframe && now < next_frame_time {
+                                    dropped += 1;
+                                    continue;
                                 }
-                                log::info!(
-                                    "[{}] seq={} size={} keyframe={} NALs={:?}",
-                                    camera_name, sequence, h264_frame.len(),
-                                    h264_frame.keyframe, nal_types
+                                // Advance next_frame_time by interval from the scheduled time
+                                // (not from now) to avoid drift accumulation
+                                next_frame_time = std::cmp::max(
+                                    next_frame_time + interval,
+                                    now,
                                 );
                             }
+
+                            let sequence = h264_frame.sequence;
                             let msg = frame_to_compressed_image(
                                 h264_frame,
                                 &camera_name,
@@ -141,8 +151,8 @@ impl bubbaloop_node::Node for RtspCameraNode {
                                 let frames_this_period = published - last_published_count;
                                 let fps = frames_this_period as f64 / elapsed.as_secs_f64();
                                 log::info!(
-                                    "[{}] seq={}, total={}, fps={:.1}",
-                                    camera_name, sequence, published, fps
+                                    "[{}] seq={}, total={}, fps={:.1}, dropped={}",
+                                    camera_name, sequence, published, fps, dropped
                                 );
                                 last_published_count = published;
                                 last_log = std::time::Instant::now();
