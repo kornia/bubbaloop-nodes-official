@@ -1,31 +1,18 @@
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let protos_dir = std::path::Path::new("protos");
-    if !protos_dir.exists() {
-        return Ok(());
-    }
-
-    let proto_files: Vec<_> = std::fs::read_dir(protos_dir)?
-        .filter_map(|e| e.ok())
-        .map(|e| e.path())
-        .filter(|p| p.extension().is_some_and(|ext| ext == "proto"))
-        .collect();
-
-    if proto_files.is_empty() {
-        return Ok(());
-    }
+    // Resolve the SDK protos directory from the DEP_ metadata set by bubbaloop-node's build.rs,
+    // falling back to the CARGO_MANIFEST_DIR-relative local copy for reproducibility.
+    let sdk_protos = std::env::var("DEP_BUBBALOOP_NODE_PROTOS_DIR")
+        .unwrap_or_else(|_| "protos".to_string());
 
     let out_dir = std::path::PathBuf::from(std::env::var("OUT_DIR")?);
 
-    let proto_strs: Vec<_> = proto_files.iter().filter_map(|p| p.to_str()).collect();
     prost_build::Config::new()
+        // Header type comes from the SDK crate — do not generate Rust code for it.
         .extern_path(".bubbaloop.header.v1", "::bubbaloop_node::schemas::header::v1")
         .type_attribute(".", "#[derive(serde::Serialize, serde::Deserialize)]")
         .file_descriptor_set_path(out_dir.join("descriptor.bin"))
-        .compile_protos(&proto_strs, &["protos/"])?;
+        .compile_protos(&["protos/camera.proto"], &["protos/", &sdk_protos])?;
 
-    for f in &proto_files {
-        println!("cargo:rerun-if-changed={}", f.display());
-    }
-    println!("cargo:rerun-if-changed=protos");
+    println!("cargo:rerun-if-changed=protos/camera.proto");
     Ok(())
 }

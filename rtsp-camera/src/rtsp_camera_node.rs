@@ -135,6 +135,29 @@ impl bubbaloop_node::Node for RtspCameraNode {
                             }
 
                             let sequence = h264_frame.sequence;
+
+                            // Log NAL types for first 150 published frames
+                            if published < 150 {
+                                let data = h264_frame.as_slice();
+                                let mut nal_types = Vec::new();
+                                let mut i = 0;
+                                while i + 4 < data.len() {
+                                    if data[i..i+4] == [0,0,0,1] {
+                                        nal_types.push(data[i+4] & 0x1F);
+                                        i += 5;
+                                    } else if i + 3 < data.len() && data[i..i+3] == [0,0,1] {
+                                        nal_types.push(data[i+3] & 0x1F);
+                                        i += 4;
+                                    } else {
+                                        i += 1;
+                                    }
+                                }
+                                log::info!(
+                                    "[{}] pub={} seq={} size={} keyframe={} NALs={:?}",
+                                    camera_name, published, sequence,
+                                    h264_frame.len(), h264_frame.keyframe, nal_types
+                                );
+                            }
                             let msg = frame_to_compressed_image(
                                 h264_frame,
                                 &camera_name,
