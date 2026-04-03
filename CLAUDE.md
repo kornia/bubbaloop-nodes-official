@@ -12,17 +12,27 @@ A bubbaloop node is an independent process that publishes/subscribes to data via
 
 ### Registration
 
-Register a node with the daemon via CLI or MCP:
+Register, install, and start a node with the daemon via CLI:
 ```bash
-bubbaloop node add /path/to/node
+bubbaloop node add /path/to/node -n <name> -c /path/to/config.yaml
+bubbaloop node install <name>   # generates systemd unit file (required before start)
+bubbaloop node start <name>
+bubbaloop node list             # verify Running + health
 ```
 
-The daemon reads `node.yaml`, builds if needed, and creates a systemd user service. Registration can also be done via MCP tools from AI agents.
+These are three separate steps:
+1. **`add`** — registers path + config in `~/.bubbaloop/nodes.json`, reads `node.yaml`
+2. **`install`** — writes the systemd user service unit file (must run after `add`, before `start`)
+3. **`start`** — calls `systemctl --user start bubbaloop-<name>.service`
+
+Registration can also be done via MCP tools from AI agents.
 
 For **multi-instance deployments** (same binary, different configs), register each instance with a unique name:
 ```bash
 bubbaloop node add /path/to/node -n tapo-entrance -c configs/entrance.yaml
+bubbaloop node install tapo-entrance && bubbaloop node start tapo-entrance
 bubbaloop node add /path/to/node -n tapo-terrace  -c configs/terrace.yaml
+bubbaloop node install tapo-terrace  && bubbaloop node start tapo-terrace
 ```
 
 The instance name and config path are tracked separately from the node type name.
@@ -48,11 +58,11 @@ The `bubbaloop` CLI and TUI are convenience wrappers that call the same MCP tool
 
 ### Capability-Based Discovery
 
-Nodes declare their capabilities in `node.yaml` (see below). The `discover_capabilities` MCP tool groups nodes by type:
+Nodes declare their capabilities in `node.yaml` (see below). The `discover_capabilities` MCP tool groups nodes by type. **Valid values** (daemon rejects anything else):
 - `sensor` — nodes that publish sensor data (cameras, telemetry, weather, etc.)
 - `actuator` — nodes that control hardware (motors, relays, etc.)
-- `compute` — nodes that process data (inference, filtering, etc.)
-- `service` — nodes that provide APIs or services
+- `processor` — nodes that process/transform data (inference, filtering, etc.)
+- `gateway` — nodes that bridge external protocols
 
 This allows AI agents to discover "all cameras" or "all inference nodes" without hardcoding node names.
 
@@ -170,6 +180,8 @@ Every node directory MUST contain:
 
 #### Rich Manifest Format (node.yaml)
 
+`command` and `build` must be **flat strings** — NOT nested maps. The daemon appends `-c <config>` to `command` automatically when a config path was given to `node add`.
+
 ```yaml
 name: rtsp-camera
 version: 0.3.0
@@ -177,30 +189,43 @@ type: rust
 description: RTSP camera capture with H.264/H.265 decoding and optional JPEG compression
 author: Edgar Riba <edgar@kornia.org>
 
-build:
-  command: pixi run build
-
-command:
-  run: pixi run run -- -c {config}
+build: pixi run build        # flat string — NOT "build:\n  command: ..."
+command: pixi run run        # daemon appends: -c /path/to/config.yaml
 
 capabilities:
-  - sensor
-  - camera
+  - sensor                   # ONLY: sensor | actuator | processor | gateway
 
 publishes:
   - suffix: camera/{name}/compressed
     description: H264-compressed frames
+    encoding: application/protobuf
     rate_hz: 10.0
-
-subscribes: []
-
-commands: []
 
 requires:
   hardware:
     - GPU with NVDEC support (Jetson or desktop NVIDIA)
   software:
     - GStreamer 1.0+ with nvdec plugin
+```
+
+**Python node example** (`system-telemetry`):
+```yaml
+name: system-telemetry
+version: "0.2.0"
+type: python
+description: System metrics publisher (CPU, memory, disk, network, load)
+author: Bubbaloop Team
+
+command: pixi run run        # pixi task wraps: python main.py
+
+capabilities:
+  - sensor
+
+publishes:
+  - suffix: system-telemetry/metrics
+    description: "CPU, memory, disk, network, load average"
+    encoding: application/json
+    rate_hz: 1.0
 ```
 
 ### Topic Naming Convention
@@ -299,20 +324,28 @@ fn descriptor() -> &'static [u8] {
 
 ### Conventions
 
-- **Always use protobuf** for message serialization (never raw JSON for data messages)
-- Define node-specific `.proto` files in `protos/` — do NOT put them in `bubbaloop-schemas`
-- Include a `name` field in `config.yaml` — enables multi-instance deployments and per-instance health/schema topics
-- **Rust nodes**: Use the Node SDK (`bubbaloop-node`) — it handles Zenoh, health, schema, config, and shutdown
-  - Publishers: `ctx.publisher_proto::<MyMsg>("suffix").await?`
-  - JSON publishers: `ctx.publisher_json("suffix").await?`
-  - Subscribers: `ctx.subscriber::<MyMsg>("suffix").await?`
-  - Full topic: `ctx.topic("suffix")` → `bubbaloop/{scope}/{machine}/suffix`
-- **Python nodes**: Use vanilla `eclipse-zenoh` + `protobuf` for serialization
-- Reuse the `Header` message (acq_time, pub_time, sequence, frame_id, machine_id, scope)
-- Support graceful shutdown via SIGINT/SIGTERM (SDK handles this automatically)
-- Accept CLI flags: `-c config.yaml` and `-e tcp/localhost:7447`
-- Never bind network listeners to `0.0.0.0` — use localhost unless hardware requires otherwise
-- Never enable Zenoh multicast or gossip scouting
+**Serialization:**
+- **High-frequency / binary data** (cameras, sensors >1Hz): use protobuf (`APPLICATION_PROTOBUF`)
+- **Low-frequency / structured data** (telemetry, weather, network checks ≤1Hz): use JSON (`APPLICATION_JSON`) — simpler, no build step, dashboard decodes natively
+- JSON field names must use **camelCase matching the dashboard's SchemaRegistry convention**: `_[a-z]` → uppercase, digits left alone. So `wind_speed_10m` → `windSpeed_10m`, `temperature_2m` stays `temperature_2m`. See `openmeteo/main.py::_snake_to_camel` for reference.
+
+**Config:**
+- Include a `name` field in `config.yaml` — SDK uses it for per-instance health/schema topics
+- Specify only the topic suffix (no `bubbaloop/{scope}/{machine}/` prefix) — SDK prepends it
+
+**Rust nodes**: Use the Node SDK (`bubbaloop-node`):
+  - `ctx.publisher_proto::<MyMsg>("suffix").await?`
+  - `ctx.publisher_json("suffix").await?`
+  - `ctx.topic("suffix")` → `bubbaloop/{scope}/{machine}/suffix`
+
+**Python nodes**: Use `bubbaloop-sdk` (`run_node()` + `NodeContext`):
+  - `ctx.publisher_json("suffix")` → publishes `APPLICATION_JSON`
+  - Health heartbeat, config loading, shutdown handled by `run_node()`
+  - `pixi.toml` task: `run = "python main.py"` (daemon appends `-c <config>`)
+
+**All nodes:**
+- Support graceful shutdown via SIGINT/SIGTERM (SDK handles automatically)
+- Never bind to `0.0.0.0`, never enable multicast/gossip scouting
 - Never store secrets in config files — use environment variables
 
 ## Security Requirements
@@ -337,56 +370,71 @@ Nodes run as systemd services with: `NoNewPrivileges=true`, `ProtectSystem=stric
 
 ## Testing Locally
 
+### Run directly (no daemon)
 ```bash
 cd <node-name>
-pixi run build    # Rust only
-pixi run run      # Run the node directly
-
-bubbaloop node add .            # Register with daemon (single instance)
-bubbaloop node add . -n <name> -c configs/<name>.yaml  # Multi-instance
-bubbaloop node start <name>     # Start as service
-bubbaloop node logs <name> -f   # View logs
-bubbaloop node stop <name>      # Stop
+pixi run build              # Rust only — Python nodes have no build step
+pixi run run -c config.yaml # Run directly for quick iteration
 ```
+
+### Register with daemon (three-step flow)
+```bash
+# Step 1: register path + config in ~/.bubbaloop/nodes.json
+bubbaloop node add /abs/path/to/<node-name> -n <name> -c /abs/path/to/config.yaml
+
+# Step 2: write systemd unit file (REQUIRED before start)
+bubbaloop node install <name>
+
+# Step 3: start as systemd service
+bubbaloop node start <name>
+
+# Inspect
+bubbaloop node list              # verify: Running
+bubbaloop node logs <name>       # check for errors
+bubbaloop node stop <name>       # stop when done
+```
+
+> **Note:** `node add` alone does NOT create the systemd unit. You must run `node install` before `node start`, or the start will fail with "Unit not found".
 
 ## Complete Node Checklist
 
 Before submitting a new node, verify ALL items:
 
-### Structure
-- [ ] `node.yaml` with: name, version, type, description, author, build, command, capabilities, publishes, requires
-- [ ] Config file (e.g., `config.yaml`) with a `name` field and `publish_topic` suffix
-- [ ] `pixi.toml` with build and run tasks
-- [ ] `protos/<node>.proto` with node-specific messages importing `header.proto`
+### node.yaml
+- [ ] `command:` is a **flat string** (e.g., `command: pixi run run`) — NOT a nested map
+- [ ] `capabilities:` only contains `sensor`, `actuator`, `processor`, or `gateway`
+- [ ] `build:` is a flat string or absent (Python nodes don't need it)
+- [ ] `publishes[].encoding` is `application/json` or `application/protobuf`
+
+### Config file
+- [ ] Has a `name` field (used for per-instance health/schema topics)
+- [ ] Topic suffix only — no `bubbaloop/{scope}/{machine}/` prefix
 
 ### Communication
-- [ ] Publishes data to scoped topic: `bubbaloop/{scope}/{machine}/{node-name}/{resource}`
-- [ ] Config specifies topic suffix only (no `bubbaloop/{scope}/{machine}/` prefix)
-- [ ] Uses protobuf serialization for all data messages
-- [ ] Health heartbeat published to `bubbaloop/{scope}/{machine}/{name}/health` every 5 seconds
-  - (SDK nodes: automatic — just implement the `Node` trait)
+- [ ] Health heartbeat at `bubbaloop/{scope}/{machine}/{name}/health` every 5s (SDK: automatic)
+- [ ] JSON nodes: field names in camelCase (`windSpeed_10m`, not `wind_speed_10m`)
+- [ ] All Zenoh connections use `mode: "client"` — never peer mode
 
 ### Code (Rust SDK nodes)
 - [ ] `bubbaloop-node` in `[dependencies]`, `bubbaloop-node-build` in `[build-dependencies]`
 - [ ] `build.rs`: `bubbaloop_node_build::compile_protos(&["protos/<node>.proto"])`
-- [ ] `Node::name()` returns the node type name (e.g., `"rtsp-camera"`)
-- [ ] `Node::descriptor()` returns `include_bytes!(concat!(env!("OUT_DIR"), "/descriptor.bin"))`
 - [ ] Config struct has a `name: String` field
 - [ ] `Node::run()` selects on `ctx.shutdown_rx.changed()`
+
+### Code (Python SDK nodes)
+- [ ] `bubbaloop-sdk` in `[pypi-dependencies]`
+- [ ] `pixi.toml` task: `run = "python main.py"` (daemon appends `-c <config>`)
+- [ ] `if __name__ == "__main__": run_node(MyNodeClass)`
+- [ ] Node class has `name = "my-node"` class attribute
 
 ### Security
 - [ ] Topic names validated: `^[a-zA-Z0-9/_\-\.]+$`
 - [ ] Config numeric values have bounds checking
 - [ ] No binding to `0.0.0.0`, no multicast/gossip scouting, no secrets in config
 
-### Testing
-- [ ] Config validation has unit tests — see `rtsp-camera/src/config.rs` for model
-- [ ] `cargo test` passes
-
-### Reference
-
-- `rtsp-camera/` is the compliance reference implementation — check it for patterns
-- Bubbaloop plugin development guide: `docs/plugin-development.md` in the bubbaloop repo
+### Reference implementations
+- **Rust**: `rtsp-camera/` — protobuf, multi-instance, GPU hardware
+- **Python**: `system-telemetry/` — JSON, psutil, 1Hz; `openmeteo/` — JSON, HTTP polling, 30s
 
 ## Testing Workflow
 
