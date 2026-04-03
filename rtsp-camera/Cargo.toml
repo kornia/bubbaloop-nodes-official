@@ -21,7 +21,7 @@ thiserror = "2.0"
 prost = "0.14"
 
 [build-dependencies]
-prost-build = "0.14"
+bubbaloop-node-build = { git = "https://github.com/kornia/bubbaloop.git", branch = "main" }
 
 [[bin]]
 name = "rtsp_camera_node"
