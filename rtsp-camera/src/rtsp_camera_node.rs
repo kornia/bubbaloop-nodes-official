@@ -1,11 +1,27 @@
 use crate::config::Config;
 use crate::h264_capture::{H264Frame, H264StreamCapture};
-use crate::h264_decode::{DecoderBackend, VideoH264Decoder};
-use bubbaloop_schemas::Header;
 use crate::proto::CompressedImage;
-use prost::Message;
+use bubbaloop_node::publisher::ProtoPublisher;
+use bubbaloop_node::schemas::Header;
 use std::sync::Arc;
-use tokio::task::JoinSet;
+
+/// Extract NAL unit types from an H264 byte-stream (Annex B format).
+fn extract_nal_types(data: &[u8]) -> Vec<u8> {
+    let mut nal_types = Vec::new();
+    let mut i = 0;
+    while i + 4 < data.len() {
+        if data[i..i + 4] == [0, 0, 0, 1] {
+            nal_types.push(data[i + 4] & 0x1F);
+            i += 5;
+        } else if data[i..i + 3] == [0, 0, 1] {
+            nal_types.push(data[i + 3] & 0x1F);
+            i += 4;
+        } else {
+            i += 1;
+        }
+    }
+    nal_types
+}
 
 fn get_pub_time() -> u64 {
     std::time::SystemTime::now()
@@ -34,236 +50,141 @@ fn frame_to_compressed_image(
     }
 }
 
-/// RTSP Camera node - captures a single H264 stream and publishes compressed frames
+/// RTSP Camera node -- captures a single H264 stream and publishes compressed frames.
 pub struct RtspCameraNode {
-    session: Arc<zenoh::Session>,
     config: Config,
-    machine_id: String,
 }
 
-impl RtspCameraNode {
-    pub fn new(
-        session: Arc<zenoh::Session>,
-        config: Config,
-        machine_id: String,
-    ) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
+#[bubbaloop_node::async_trait::async_trait]
+impl bubbaloop_node::Node for RtspCameraNode {
+    type Config = Config;
+
+    fn name() -> &'static str {
+        "rtsp-camera"
+    }
+
+    fn descriptor() -> &'static [u8] {
+        include_bytes!(concat!(env!("OUT_DIR"), "/descriptor.bin"))
+    }
+
+    async fn init(
+        _ctx: &bubbaloop_node::NodeContext,
+        config: &Config,
+    ) -> anyhow::Result<Self> {
         Ok(Self {
-            session,
-            config,
-            machine_id,
+            config: config.clone(),
         })
     }
 
-    /// Compressed task: feeds decoder, publishes compressed images
-    #[allow(clippy::too_many_arguments)]
-    async fn compressed_task(
-        session: Arc<zenoh::Session>,
-        capture: Arc<H264StreamCapture>,
-        decoder: Arc<VideoH264Decoder>,
-        publish_topic: String,
-        camera_name: String,
-        machine_id: String,
-        scope: String,
-        shutdown_tx: tokio::sync::watch::Sender<()>,
-    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        let mut shutdown_rx = shutdown_tx.subscribe();
+    async fn run(self, ctx: bubbaloop_node::NodeContext) -> anyhow::Result<()> {
+        let camera_name = self.config.name.clone();
+        let publish_topic = self.config.publish_topic.clone();
 
-        // Create compressed publisher
-        let compressed_pub = session
-            .declare_publisher(&publish_topic)
-            .await
-            .map_err(|e| {
-                Box::<dyn std::error::Error + Send + Sync>::from(format!(
-                    "Publisher error: {}",
-                    e
-                ))
-            })?;
+        let url = std::env::var("RTSP_URL").unwrap_or_else(|_| self.config.url.clone());
+        let capture = Arc::new(H264StreamCapture::new(&url, self.config.latency)?);
+        capture.start()?;
 
         log::info!(
-            "[{}] Compressed task started -> '{}'",
+            "Camera '{}' capturing from RTSP (latency={}ms)",
             camera_name,
-            publish_topic
+            self.config.latency
         );
 
+        let compressed_pub: ProtoPublisher<CompressedImage> =
+            ctx.publisher_proto(&publish_topic).await?;
+
+        log::info!("[{}] Publishing to: {}", camera_name, ctx.topic(&publish_topic));
+
+        // Keyframes are always published to avoid breaking the H264 decode chain.
+        let frame_interval = self.config.frame_rate.map(|fps| {
+            std::time::Duration::from_secs_f64(1.0 / fps as f64)
+        });
+
+        if let Some(interval) = frame_interval {
+            log::info!(
+                "[{}] Frame rate limit: {} fps (interval: {:.1}ms)",
+                camera_name,
+                self.config.frame_rate.unwrap(),
+                interval.as_secs_f64() * 1000.0
+            );
+        }
+
+        let mut shutdown_rx = ctx.shutdown_rx.clone();
         let mut published: u64 = 0;
+        let mut dropped: u64 = 0;
         let mut last_log = std::time::Instant::now();
         let mut last_published_count: u64 = 0;
+        let mut next_frame_time = std::time::Instant::now();
 
         loop {
             tokio::select! {
                 biased;
 
                 _ = shutdown_rx.changed() => {
-                    log::info!("[{}] Compressed task received shutdown", camera_name);
+                    log::info!("[{}] Shutdown signal received", camera_name);
                     break;
                 }
 
                 result = capture.receiver().recv_async() => {
                     match result {
                         Ok(h264_frame) => {
-                            // Feed decoder
-                            if let Err(e) = decoder.push(h264_frame.as_slice(), h264_frame.pts, h264_frame.keyframe) {
-                                log::warn!("[{}] Decoder push failed: {}", camera_name, e);
+                            let now = std::time::Instant::now();
+                            if let Some(interval) = frame_interval {
+                                if !h264_frame.keyframe && now < next_frame_time {
+                                    dropped += 1;
+                                    continue;
+                                }
+                                next_frame_time = std::cmp::max(
+                                    next_frame_time + interval,
+                                    now,
+                                );
                             }
 
-                            // Publish compressed
                             let sequence = h264_frame.sequence;
-                            let msg = frame_to_compressed_image(h264_frame, &camera_name, &machine_id, &scope);
-                            if compressed_pub.put(msg.encode_to_vec()).await.is_ok() {
+
+                            // Log NAL types for early frames to verify stream health
+                            if published < 10 {
+                                let nal_types = extract_nal_types(h264_frame.as_slice());
+                                log::info!(
+                                    "[{}] pub={} seq={} size={} keyframe={} NALs={:?}",
+                                    camera_name, published, sequence,
+                                    h264_frame.len(), h264_frame.keyframe, nal_types
+                                );
+                            }
+                            let msg = frame_to_compressed_image(
+                                h264_frame,
+                                &camera_name,
+                                &ctx.machine_id,
+                                &ctx.scope,
+                            );
+                            if compressed_pub.put(&msg).await.is_ok() {
                                 published += 1;
                             }
 
-                            // Log stats with FPS every second
+                            // Periodic FPS stats
                             let elapsed = last_log.elapsed();
                             if elapsed.as_secs() >= 1 {
                                 let frames_this_period = published - last_published_count;
                                 let fps = frames_this_period as f64 / elapsed.as_secs_f64();
                                 log::info!(
-                                    "[{}] Compressed: seq={}, total={}, fps={:.1}",
-                                    camera_name,
-                                    sequence,
-                                    published,
-                                    fps
+                                    "[{}] seq={}, total={}, fps={:.1}, dropped={}",
+                                    camera_name, sequence, published, fps, dropped
                                 );
                                 last_published_count = published;
                                 last_log = std::time::Instant::now();
                             }
                         }
-                        Err(_) => break, // Channel closed
+                        Err(_) => break,
                     }
                 }
             }
         }
 
-        log::info!(
-            "[{}] Compressed task exiting (published: {})",
-            camera_name,
-            published
-        );
-
-        Ok(())
-    }
-
-    pub async fn run(
-        self,
-        shutdown_tx: tokio::sync::watch::Sender<()>,
-        zenoh_session: std::sync::Arc<zenoh::Session>,
-        scope: String,
-        machine_id: String,
-    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        let camera_name = self.config.name.clone();
-        let publish_topic = self.config.publish_topic.clone();
-
-        // Allow RTSP_URL env var to override config
-        let url = std::env::var("RTSP_URL").unwrap_or_else(|_| self.config.url.clone());
-
-        // Create H264 capture
-        let capture = Arc::new(H264StreamCapture::new(
-            &url,
-            self.config.latency,
-        )?);
-
-        capture.start()?;
-
-        // Create decoder (shared between tasks via its output channel)
-        let decoder_backend: DecoderBackend = self.config.decoder.into();
-        let decoder = Arc::new(VideoH264Decoder::new(
-            decoder_backend,
-            self.config.height,
-            self.config.width,
-        )?);
-
-        log::info!(
-            "Camera '{}' decoder: {:?} {}x{}",
-            camera_name,
-            decoder_backend,
-            self.config.width,
-            self.config.height
-        );
-
-        // Build scoped topics
-        let full_data_topic = format!("bubbaloop/{}/{}/{}", scope, machine_id, publish_topic);
-        let health_topic = format!(
-            "bubbaloop/{}/{}/health/rtsp-camera-{}",
-            scope, machine_id, camera_name
-        );
-
-        log::info!("[{}] Data topic: {}", camera_name, full_data_topic);
-        log::info!("[{}] Health topic: {}", camera_name, health_topic);
-
-        // Create health heartbeat publisher
-        let health_publisher = zenoh_session
-            .declare_publisher(health_topic.clone())
-            .await
-            .map_err(|e| {
-                Box::<dyn std::error::Error + Send + Sync>::from(format!(
-                    "Health publisher error: {}",
-                    e
-                ))
-            })?;
-
-        // Spawn tasks with shutdown receivers
-        let mut tasks: JoinSet<()> = JoinSet::new();
-
-        tasks.spawn({
-            let session = self.session.clone();
-            let camera_name = camera_name.clone();
-            let capture = capture.clone();
-            let decoder = decoder.clone();
-            let machine_id = self.machine_id.clone();
-            let scope = scope.clone();
-            let shutdown_tx = shutdown_tx.clone();
-            async move {
-                if let Err(e) = Self::compressed_task(
-                    session,
-                    capture,
-                    decoder,
-                    full_data_topic,
-                    camera_name.clone(),
-                    machine_id,
-                    scope,
-                    shutdown_tx,
-                )
-                .await
-                {
-                    log::error!("[{}] Compressed task failed: {}", camera_name, e);
-                }
-            }
-        });
-
-        // Health heartbeat + shutdown loop
-        let mut shutdown_rx = shutdown_tx.subscribe();
-        let mut health_interval = tokio::time::interval(std::time::Duration::from_secs(5));
-
-        loop {
-            tokio::select! {
-                biased;
-
-                _ = shutdown_rx.changed() => {
-                    log::info!("Shutting down camera '{}'...", camera_name);
-                    break;
-                }
-
-                _ = health_interval.tick() => {
-                    if let Err(e) = health_publisher.put("ok").await {
-                        log::warn!("[{}] Failed to publish health heartbeat: {}", camera_name, e);
-                    }
-                }
-            }
-        }
-
-        // Tasks will exit via their select! loops when they see shutdown
-        while tasks.join_next().await.is_some() {}
-
-        // Cleanup resources
         if let Err(e) = capture.close() {
             log::error!("[{}] Failed to close capture: {}", camera_name, e);
         }
-        if let Err(e) = decoder.close() {
-            log::error!("[{}] Failed to close decoder: {}", camera_name, e);
-        }
 
-        log::info!("Camera '{}' shutdown complete", camera_name);
+        log::info!("Camera '{}' shutdown complete (published: {})", camera_name, published);
         Ok(())
     }
 }

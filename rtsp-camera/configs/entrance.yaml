@@ -1,10 +1,8 @@
 # Instance parameters for rtsp-camera.
-# Run: ./target/release/cameras_node -c entrance.yaml
+# Run: ./target/release/rtsp_camera_node -c configs/entrance.yaml
 
-name: entrance
-publish_topic: camera/entrance/compressed
-url: "rtsp://user:pass@host:554/stream"
-latency: 200
-decoder: cpu
-width: 224
-height: 224
+name: tapo_entrance
+publish_topic: camera/tapo_entrance/compressed
+url: "rtsp://tapo_entrance:clawd2026@192.168.1.141:554/stream1"
+latency: 50
+frame_rate: 10

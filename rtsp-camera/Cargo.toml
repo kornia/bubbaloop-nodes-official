@@ -7,28 +7,20 @@ edition = "2021"
 description = "RTSP camera capture and H264 processing"
 
 [dependencies]
-anyhow = "1.0"
-argh = "0.1"
-ctrlc = "3.4"
-env_logger = "0.11"
+bubbaloop-node = { git = "https://github.com/kornia/bubbaloop.git", branch = "main" }
+anyhow = "1"
 log = "0.4"
-regex-lite = "0.1"
-tokio = { version = "1", features = ["full"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 flume = "0.12"
 gstreamer = "0.24"
 gstreamer-app = "0.24"
-gstreamer-video = "0.24"
-zenoh = "1.7"
 serde = { version = "1.0", features = ["derive"] }
-serde_json = "1.0"
 serde_yaml = "0.9"
 thiserror = "2.0"
-hostname = "0.4"
 prost = "0.14"
-bubbaloop-schemas = { git = "https://github.com/kornia/bubbaloop.git", branch = "main", features = ["descriptor"] }
 
 [build-dependencies]
-prost-build = "0.14"
+bubbaloop-node-build = { git = "https://github.com/kornia/bubbaloop.git", branch = "main" }
 
 [[bin]]
 name = "rtsp_camera_node"

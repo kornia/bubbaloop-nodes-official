@@ -1,20 +1,22 @@
 name: system-telemetry
-version: "0.1.0"
-type: rust
+version: "0.2.0"
+type: python
 description: System metrics publisher (CPU, memory, disk, network, load)
 author: Bubbaloop Team
-build: pixi run build
-command: ./target/release/system_telemetry_node
+
+command: pixi run main
 
 capabilities:
   - sensor
 
 publishes:
   - suffix: system-telemetry/metrics
-    description: "System metrics (CPU usage, memory, disk, network I/O, load average, uptime)"
-    schema_type: "bubbaloop.system_telemetry.v1.SystemMetrics"
+    description: "System metrics — CPU, memory, disk, network I/O, load average"
+    encoding: application/json
     rate_hz: 1.0
 
 requires:
   hardware: []
-  software: []
+  software:
+    - Python 3.11+
+    - psutil

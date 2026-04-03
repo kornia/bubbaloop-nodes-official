@@ -57,7 +57,7 @@ impl H264StreamCapture {
             "rtspsrc location={url} latency={latency} ! \
              rtph264depay ! h264parse config-interval=-1 ! \
              video/x-h264,stream-format=byte-stream,alignment=au ! \
-             appsink name=sink emit-signals=true sync=false max-buffers=2 drop=true"
+             appsink name=sink emit-signals=true sync=false max-buffers=30 drop=true"
         );
 
         let pipeline = gstreamer::parse::launch(&pipeline_desc)?

@@ -1,7 +1,7 @@
 name: rtsp-camera
 version: "0.1.0"
 type: rust
-description: RTSP camera capture with hardware H264 decode
+description: RTSP camera capture, publishes compressed H264 via Zenoh
 author: Bubbaloop Team
 build: pixi run build
 command: ./target/release/rtsp_camera_node
@@ -19,11 +19,9 @@ requires:
   hardware:
     - network
     - camera
-    - gpu
 
   software:
     - gstreamer
     - gst-plugins-base
     - gst-plugins-good
-    - gst-plugins-bad
     - gst-rtsp-server
