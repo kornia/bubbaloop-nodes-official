@@ -282,21 +282,24 @@ class H264DecoderCUDA:
             cuda_ptr = nvbuf[0].surfaceList[0].dataPtr
 
             cp = self._cp
-            # Wrap existing CUDA device memory without allocation (zero-copy)
-            mem = cp.cuda.UnownedMemory(cuda_ptr, height * width * 4, owner=None)
-            arr_rgba = cp.ndarray(
-                (height, width, 4),
-                dtype=cp.uint8,
-                memptr=cp.cuda.MemoryPointer(mem, 0),
-            )
-            # GPU-only: RGBA HWC → RGB CHW float32 [0,1]
-            # arr_rgba[:,:,:3] is a non-contiguous view; ascontiguousarray copies on GPU
-            arr_rgb_chw = cp.ascontiguousarray(
-                arr_rgba[:, :, :3].transpose(2, 0, 1)
-            ).astype(cp.float32) / 255.0
+            # All cupy ops in device(0) context — prevents peer-access probe on
+            # single-GPU Jetson (cupy tries deviceCanAccessPeer(0,1) → invalid ordinal)
+            with cp.cuda.Device(0):
+                # Wrap existing CUDA device memory without allocation (zero-copy)
+                mem = cp.cuda.UnownedMemory(cuda_ptr, height * width * 4, owner=None)
+                arr_rgba = cp.ndarray(
+                    (height, width, 4),
+                    dtype=cp.uint8,
+                    memptr=cp.cuda.MemoryPointer(mem, 0),
+                )
+                # GPU-only: RGBA HWC → RGB CHW float32 [0,1]
+                arr_rgb_chw = cp.ascontiguousarray(
+                    arr_rgba[:, :, :3].transpose(2, 0, 1)
+                ).astype(cp.float32) / 255.0
 
-            # Synchronize before releasing the GstBuffer so the GPU copy is complete
-            cp.cuda.Stream.null.synchronize()
+                # Synchronize before releasing the GstBuffer so GPU copy is complete
+                cp.cuda.Stream.null.synchronize()
+
             buf.unmap(mapinfo)
 
             # DLPack hand-off: torch takes ownership of arr_rgb_chw's CUDA memory
