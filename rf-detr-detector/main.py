@@ -165,13 +165,14 @@ class H264DecoderCUDA:
     the dedicated NVDEC block: no CPU cycles spent on H264 decoding.
     """
 
+    # nvvidconv does not support RGB output — use RGBA then drop the alpha channel
     _PIPELINE = (
         "appsrc name=src format=3 block=false max-bytes=2000000 "
         "caps=video/x-h264,stream-format=byte-stream,alignment=au "
         "! h264parse "
         "! nvv4l2decoder "
         "! nvvidconv "
-        "! video/x-raw,format=RGB "
+        "! video/x-raw,format=RGBA "
         "! appsink name=sink emit-signals=true sync=false max-buffers=2 drop=true"
     )
 
@@ -214,16 +215,16 @@ class H264DecoderCUDA:
         height = struct.get_value("height")
         ok, mapinfo = buf.map(Gst.MapFlags.READ)
         if ok:
-            # CPU RGB bytes from nvvidconv — one H2D transfer to CUDA
+            # CPU RGBA bytes from nvvidconv — one H2D transfer to CUDA
             frame_cpu = (
                 np.frombuffer(mapinfo.data, dtype=np.uint8)
-                .reshape(height, width, 3)
+                .reshape(height, width, 4)
                 .copy()
             )
             buf.unmap(mapinfo)
-            # HWC uint8 → CHW float32 [0,1] on CUDA (non-blocking H2D copy)
+            # RGBA HWC uint8 → RGB CHW float32 [0,1] on CUDA (drop alpha, non-blocking H2D)
             tensor = (
-                torch.from_numpy(frame_cpu)
+                torch.from_numpy(frame_cpu[:, :, :3])
                 .permute(2, 0, 1)
                 .to(dtype=torch.float32, device="cuda", non_blocking=True)
                 .div_(255.0)
@@ -293,7 +294,7 @@ class RfDetrDetectorNode:
 
         cuda_ok = torch.cuda.is_available()
         if cuda_ok:
-            log.info("CUDA available — using nvv4l2decoder + zero-copy CUDA tensor path")
+            log.info("CUDA available — using nvv4l2decoder (NVDEC) + H2D CUDA tensor path")
             self._decoder = H264DecoderCUDA()
             self._detector = Detector(
                 confidence_threshold=config["confidence_threshold"],
