@@ -25,6 +25,13 @@ publishes:
     encoding: application/json
     rate_hz: 0.00009
 
+commands:
+  - name: set_location
+    description: "Change the weather location"
+    params:
+      latitude: float           # e.g. 41.3851
+      longitude: float          # e.g. 2.1734
+
 requires:
   hardware:
     - network

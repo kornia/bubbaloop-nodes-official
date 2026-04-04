@@ -15,6 +15,12 @@ publishes:
     schema_type: "bubbaloop.camera.v1.CompressedImage"
     rate_hz: 30.0
 
+commands:
+  - name: set_framerate
+    description: "Change the capture frame rate"
+    params:
+      fps: float                # 1.0–60.0
+
 requires:
   hardware:
     - network
