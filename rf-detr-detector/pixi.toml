@@ -16,8 +16,9 @@ pygobject = ">=3.44"
 pytest = ">=7.0"
 eclipse-zenoh = ">=1.0"
 pyyaml = ">=6.0"
-torch = { version = ">=2.0", index = "https://pypi.org/simple/" }
-torchvision = { version = ">=0.15", index = "https://pypi.org/simple/" }
+torch = { version = ">=2.0", index = "https://download.pytorch.org/whl/cu126" }
+torchvision = { version = ">=0.15", index = "https://download.pytorch.org/whl/cu126" }
+cupy-cuda12x = ">=13.0"
 rfdetr = ">=1.6.3"
 pillow = ">=10.0"
 numpy = ">=1.24"
