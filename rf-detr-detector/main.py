@@ -2,7 +2,6 @@
 """rf-detr-detector — Object detection on H264 camera streams using RF-DETR."""
 
 import base64
-import ctypes
 import logging
 import queue
 import re
@@ -41,64 +40,6 @@ COCO_CLASSES = [
     "oven", "toaster", "sink", "refrigerator", "book", "clock", "vase",
     "scissors", "teddy bear", "hair drier", "toothbrush",
 ]
-
-# ---------------------------------------------------------------------------
-# NvBufSurface ctypes structs (Jetson NVMM zero-copy path)
-# From /usr/src/jetson_multimedia_api/include/nvbufsurface.h
-# STRUCTURE_PADDING=4, NVBUF_MAX_PLANES=4
-# ---------------------------------------------------------------------------
-_MAX_PLANES = 4
-_STRUCT_PAD = 4
-
-
-class _NvBufSurfacePlaneParams(ctypes.Structure):
-    _fields_ = [
-        ("num_planes",   ctypes.c_uint32),
-        ("width",        ctypes.c_uint32 * _MAX_PLANES),
-        ("height",       ctypes.c_uint32 * _MAX_PLANES),
-        ("pitch",        ctypes.c_uint32 * _MAX_PLANES),
-        ("offset",       ctypes.c_uint32 * _MAX_PLANES),
-        ("psize",        ctypes.c_uint32 * _MAX_PLANES),
-        ("bytesPerPix",  ctypes.c_uint32 * _MAX_PLANES),
-        ("_reserved",    ctypes.c_void_p * (_STRUCT_PAD * _MAX_PLANES)),
-    ]
-
-
-class _NvBufSurfaceMappedAddr(ctypes.Structure):
-    _fields_ = [
-        ("addr",      ctypes.c_void_p * _MAX_PLANES),
-        ("eglImage",  ctypes.c_void_p),
-        ("_reserved", ctypes.c_void_p * _STRUCT_PAD),
-    ]
-
-
-class _NvBufSurfaceParams(ctypes.Structure):
-    _fields_ = [
-        ("width",        ctypes.c_uint32),
-        ("height",       ctypes.c_uint32),
-        ("pitch",        ctypes.c_uint32),
-        ("colorFormat",  ctypes.c_int),    # enum
-        ("layout",       ctypes.c_int),    # enum
-        ("bufferDesc",   ctypes.c_uint64),
-        ("dataSize",     ctypes.c_uint32),
-        ("dataPtr",      ctypes.c_void_p), # CUDA device ptr for NVBUF_MEM_CUDA_DEVICE
-        ("planeParams",  _NvBufSurfacePlaneParams),
-        ("mappedAddr",   _NvBufSurfaceMappedAddr),
-        ("paramex",      ctypes.c_void_p), # NvBufSurfaceParamsEx*
-        ("_reserved",    ctypes.c_void_p * (_STRUCT_PAD - 1)),
-    ]
-
-
-class _NvBufSurface(ctypes.Structure):
-    _fields_ = [
-        ("gpuId",        ctypes.c_uint32),
-        ("batchSize",    ctypes.c_uint32),
-        ("numFilled",    ctypes.c_uint32),
-        ("isContiguous", ctypes.c_bool),
-        ("memType",      ctypes.c_int),    # enum; NVBUF_MEM_CUDA_DEVICE = 2
-        ("surfaceList",  ctypes.POINTER(_NvBufSurfaceParams)),
-        ("_reserved",    ctypes.c_void_p * _STRUCT_PAD),
-    ]
 
 
 def load_config(path: str) -> dict:
@@ -210,33 +151,31 @@ class H264Decoder:
 
 
 class H264DecoderCUDA:
-    """GStreamer H264 decoder using Jetson hardware — zero-copy CUDA tensor output.
+    """GStreamer H264 decoder using Jetson NVDEC hardware — outputs CHW float CUDA tensor.
 
-    Pipeline: nvv4l2decoder (NVDEC hardware decode) → nvvidconv with
-    NVBUF_MEM_CUDA_DEVICE → NVMM buffer in CUDA device memory.
+    Pipeline: nvv4l2decoder (Jetson hardware H264 decode) → nvvidconv (VIC
+    color conversion NV12→RGB) → CPU-side appsink → torch CHW tensor on CUDA.
 
-    In the appsink callback, buf.map(READ) gives a pointer to the NvBufSurface
-    metadata struct (NOT the pixel data). We read surfaceList[0].dataPtr via
-    ctypes to get the raw CUDA device pointer, wrap it as a cupy UnownedMemory,
-    convert RGBA → RGB CHW float32 entirely on GPU, then hand off to torch via
-    DLPack — zero CPU memory involvement.
+    On Jetson Orin the iGPU uses SURFACE_ARRAY NVMM buffers (not linear CUDA
+    device memory), so a direct zero-copy CUDA pointer is not available without
+    EGL+CUDA inter-op. Instead, nvvidconv converts on the VIC and gives us CPU
+    RGB bytes, which we move to CUDA with a single non-blocking H2D transfer.
+
+    The main benefit over avdec_h264 (CPU decoder) is that nvv4l2decoder uses
+    the dedicated NVDEC block: no CPU cycles spent on H264 decoding.
     """
 
-    # nvbuf-memory-type=2 → NVBUF_MEM_CUDA_DEVICE (GPU-accessible CUDA memory)
     _PIPELINE = (
         "appsrc name=src format=3 block=false max-bytes=2000000 "
         "caps=video/x-h264,stream-format=byte-stream,alignment=au "
         "! h264parse "
         "! nvv4l2decoder "
-        "! nvvidconv nvbuf-memory-type=2 "
-        "! video/x-raw(memory:NVMM),format=RGBA "
+        "! nvvidconv "
+        "! video/x-raw,format=RGB "
         "! appsink name=sink emit-signals=true sync=false max-buffers=2 drop=true"
     )
 
     def __init__(self) -> None:
-        import cupy as cp
-        self._cp = cp
-
         Gst.init(None)
         self._pipeline = Gst.parse_launch(self._PIPELINE)
         self._appsrc = self._pipeline.get_by_name("src")
@@ -273,39 +212,22 @@ class H264DecoderCUDA:
         struct = caps.get_structure(0)
         width = struct.get_value("width")
         height = struct.get_value("height")
-
         ok, mapinfo = buf.map(Gst.MapFlags.READ)
         if ok:
-            # mapinfo.data for NVMM buffers points to the NvBufSurface metadata struct,
-            # not the pixel data. We read surfaceList[0].dataPtr to get the CUDA device ptr.
-            nvbuf = ctypes.cast(mapinfo.data, ctypes.POINTER(_NvBufSurface))
-            cuda_ptr = nvbuf[0].surfaceList[0].dataPtr
-
-            cp = self._cp
-            # All cupy ops in device(0) context — prevents peer-access probe on
-            # single-GPU Jetson (cupy tries deviceCanAccessPeer(0,1) → invalid ordinal)
-            with cp.cuda.Device(0):
-                # Wrap existing CUDA device memory without allocation (zero-copy).
-                # device_id=0 is required — without it cupy probes peer access to
-                # non-existent devices and raises cudaErrorInvalidDevice on Jetson.
-                mem = cp.cuda.UnownedMemory(cuda_ptr, height * width * 4, owner=None, device_id=0)
-                arr_rgba = cp.ndarray(
-                    (height, width, 4),
-                    dtype=cp.uint8,
-                    memptr=cp.cuda.MemoryPointer(mem, 0),
-                )
-                # GPU-only: RGBA HWC → RGB CHW float32 [0,1]
-                arr_rgb_chw = cp.ascontiguousarray(
-                    arr_rgba[:, :, :3].transpose(2, 0, 1)
-                ).astype(cp.float32) / 255.0
-
-                # Synchronize before releasing the GstBuffer so GPU copy is complete
-                cp.cuda.Stream.null.synchronize()
-
+            # CPU RGB bytes from nvvidconv — one H2D transfer to CUDA
+            frame_cpu = (
+                np.frombuffer(mapinfo.data, dtype=np.uint8)
+                .reshape(height, width, 3)
+                .copy()
+            )
             buf.unmap(mapinfo)
-
-            # DLPack hand-off: torch takes ownership of arr_rgb_chw's CUDA memory
-            tensor = torch.from_dlpack(arr_rgb_chw.toDlpack())
+            # HWC uint8 → CHW float32 [0,1] on CUDA (non-blocking H2D copy)
+            tensor = (
+                torch.from_numpy(frame_cpu)
+                .permute(2, 0, 1)
+                .to(dtype=torch.float32, device="cuda", non_blocking=True)
+                .div_(255.0)
+            )
             try:
                 self._frame_queue.put_nowait(tensor)
             except queue.Full:
