@@ -34,7 +34,7 @@ environments:
       - conda: https://conda.anaconda.org/conda-forge/linux-64/tk-8.6.13-noxft_ha0e22de_103.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/tzdata-2025c-hc9c84f9_1.conda
       - conda: https://conda.anaconda.org/conda-forge/linux-64/zstd-1.5.7-hb78ec9c_6.conda
-      - pypi: git+https://github.com/kornia/bubbaloop.git?subdirectory=python-sdk&branch=main#624da854fd9c487bafe9af6ae634d14e057016a1
+      - pypi: git+https://github.com/kornia/bubbaloop.git?subdirectory=python-sdk&branch=feat%2Fpublisher-queryable-mirror#93c9ea5d27f23b0f0f08357a511e87326ea8fa0e
       - pypi: https://files.pythonhosted.org/packages/9a/3c/c17fb3ca2d9c3acff52e30b309f538586f9f5b9c9cf454f3845fc9af4881/certifi-2026.2.25-py3-none-any.whl
       - pypi: https://files.pythonhosted.org/packages/47/5c/032c2d5a07fe4d4855fea851209cca2b6f03ebeb6d4e3afdb3358386a684/charset_normalizer-3.4.7-cp314-cp314-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl
       - pypi: https://files.pythonhosted.org/packages/c6/f9/22883e613eb193f8f956e8e96d8f16e39b369dac4ade7aa3b37f344ddc62/eclipse_zenoh-1.8.0.tar.gz
@@ -68,7 +68,7 @@ environments:
       - conda: https://conda.anaconda.org/conda-forge/linux-aarch64/tk-8.6.13-noxft_h561c983_103.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/tzdata-2025c-hc9c84f9_1.conda
       - conda: https://conda.anaconda.org/conda-forge/linux-aarch64/zstd-1.5.7-h85ac4a6_6.conda
-      - pypi: git+https://github.com/kornia/bubbaloop.git?subdirectory=python-sdk&branch=main#624da854fd9c487bafe9af6ae634d14e057016a1
+      - pypi: git+https://github.com/kornia/bubbaloop.git?subdirectory=python-sdk&branch=feat%2Fpublisher-queryable-mirror#93c9ea5d27f23b0f0f08357a511e87326ea8fa0e
       - pypi: https://files.pythonhosted.org/packages/9a/3c/c17fb3ca2d9c3acff52e30b309f538586f9f5b9c9cf454f3845fc9af4881/certifi-2026.2.25-py3-none-any.whl
       - pypi: https://files.pythonhosted.org/packages/99/85/c091fdee33f20de70d6c8b522743b6f831a2f1cd3ff86de4c6a827c48a76/charset_normalizer-3.4.7-cp314-cp314-manylinux2014_aarch64.manylinux_2_17_aarch64.manylinux_2_28_aarch64.whl
       - pypi: https://files.pythonhosted.org/packages/cf/ba/7bb452da75a6c3d40d512112e90aa9942996466051ebfb038c6dc41ed302/eclipse_zenoh-1.8.0-cp39-abi3-manylinux_2_28_aarch64.whl
@@ -112,7 +112,7 @@ packages:
   purls: []
   size: 23712
   timestamp: 1650670790230
-- pypi: git+https://github.com/kornia/bubbaloop.git?subdirectory=python-sdk&branch=main#624da854fd9c487bafe9af6ae634d14e057016a1
+- pypi: git+https://github.com/kornia/bubbaloop.git?subdirectory=python-sdk&branch=feat%2Fpublisher-queryable-mirror#93c9ea5d27f23b0f0f08357a511e87326ea8fa0e
   name: bubbaloop-sdk
   version: 0.1.0
   requires_dist:
