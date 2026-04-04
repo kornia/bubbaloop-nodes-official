@@ -2,6 +2,19 @@
 
 Guide for creating [bubbaloop](https://github.com/kornia/bubbaloop) nodes -- standalone processes that register with the bubbaloop daemon for lifecycle management, health monitoring, and API-driven orchestration. For system overview, see [README.md](README.md).
 
+## Git Workflow — MANDATORY
+
+**NEVER commit directly to `main`.** Always create a feature/fix branch first:
+
+```bash
+git checkout -b feat/<topic>   # or fix/<topic>, chore/<topic>
+# make changes, commit
+git push origin feat/<topic>
+# open PR → merge via GitHub
+```
+
+Branch naming: `feat/<topic>`, `fix/<topic>`, `chore/<topic>`
+
 ## System Context
 
 A bubbaloop node is an independent process that publishes/subscribes to data via Zenoh and registers with the local bubbaloop daemon. The daemon is a **passive skill runtime** that manages lifecycle (start/stop/restart), monitors health via heartbeats, and exposes capabilities through an **MCP (Model Context Protocol) server**. AI agents orchestrate nodes via MCP tools -- the `bubbaloop` CLI and TUI are convenience wrappers for the same underlying API. Nodes can run on any machine -- the daemon scopes all topics by `scope` and `machine_id`.
