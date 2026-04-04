@@ -179,11 +179,9 @@ class Detector:
             return []
 
         detections = []
-        for box, label, score in zip(result.boxes, result.labels, result.scores):
-            class_id = int(label)
-            class_name = (
-                COCO_CLASSES[class_id] if class_id < len(COCO_CLASSES) else str(class_id)
-            )
+        for box, class_id, score in zip(result.xyxy, result.class_id, result.confidence):
+            class_id = int(class_id)
+            class_name = COCO_CLASSES[class_id] if class_id < len(COCO_CLASSES) else str(class_id)
             detections.append(
                 {
                     "class_id": class_id,
