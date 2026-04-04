@@ -1,0 +1,22 @@
+[workspace]
+name = "rf-detr-detector"
+channels = ["conda-forge"]
+platforms = ["linux-64", "linux-aarch64"]
+
+[tasks]
+main = { cmd = "python main.py", env = { GI_TYPELIB_PATH = "/usr/lib/aarch64-linux-gnu/girepository-1.0" } }
+
+[dependencies]
+python = ">=3.11"
+pip = "*"
+pygobject = ">=3.44"
+
+[pypi-dependencies]
+eclipse-zenoh = ">=1.0"
+pyyaml = ">=6.0"
+torch = { version = ">=2.0", index = "https://pypi.org/simple/" }
+torchvision = { version = ">=0.15", index = "https://pypi.org/simple/" }
+rfdetr = ">=1.6.3"
+pillow = ">=10.0"
+numpy = ">=1.24"
+bubbaloop-sdk = { git = "https://github.com/kornia/bubbaloop.git", branch = "main", subdirectory = "python-sdk" }
