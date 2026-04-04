@@ -1,0 +1,4 @@
+name: tapo_terrace
+subscribe_topic: camera/tapo_terrace/compressed
+publish_topic: rf-detr-detector/tapo_terrace/detections
+confidence_threshold: 0.5
