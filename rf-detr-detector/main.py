@@ -285,8 +285,10 @@ class H264DecoderCUDA:
             # All cupy ops in device(0) context — prevents peer-access probe on
             # single-GPU Jetson (cupy tries deviceCanAccessPeer(0,1) → invalid ordinal)
             with cp.cuda.Device(0):
-                # Wrap existing CUDA device memory without allocation (zero-copy)
-                mem = cp.cuda.UnownedMemory(cuda_ptr, height * width * 4, owner=None)
+                # Wrap existing CUDA device memory without allocation (zero-copy).
+                # device_id=0 is required — without it cupy probes peer access to
+                # non-existent devices and raises cudaErrorInvalidDevice on Jetson.
+                mem = cp.cuda.UnownedMemory(cuda_ptr, height * width * 4, owner=None, device_id=0)
                 arr_rgba = cp.ndarray(
                     (height, width, 4),
                     dtype=cp.uint8,
