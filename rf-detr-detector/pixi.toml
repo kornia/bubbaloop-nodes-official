@@ -20,6 +20,5 @@ torch = { version = "==2.8.0", index = "https://pypi.jetson-ai-lab.io/jp6/cu126"
 torchvision = { version = "==0.23.0", index = "https://pypi.jetson-ai-lab.io/jp6/cu126" }
 rfdetr = ">=1.6.3"
 huggingface-hub = ">=1.5.0,<2.0"
-pillow = ">=10.0"
 numpy = ">=1.24,<2.0"
 bubbaloop-sdk = { git = "https://github.com/kornia/bubbaloop.git", branch = "main", subdirectory = "python-sdk" }
