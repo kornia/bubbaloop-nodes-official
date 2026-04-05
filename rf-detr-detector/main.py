@@ -265,10 +265,18 @@ class Detector:
         log.info("RF-DETR model loaded and optimized (size=%s).", model)
 
     def detect(self, image) -> list[dict]:
-        """Run inference. image may be np.ndarray (HWC uint8) or torch.Tensor (CHW float [0,1])."""
+        """Run inference. image may be np.ndarray (HWC uint8) or torch.Tensor (CHW float [0,1]).
+
+        torch.Tensor is passed directly to RF-DETR (no PIL roundtrip).
+        np.ndarray (HWC uint8) is converted to CHW float32 tensor first.
+        """
         if isinstance(image, np.ndarray):
-            from PIL import Image
-            image = Image.fromarray(image)
+            image = (
+                torch.from_numpy(image)
+                .permute(2, 0, 1)
+                .to(dtype=torch.float32)
+                .div_(255.0)
+            )
 
         try:
             result = self._model.predict(image, threshold=self._threshold)
