@@ -3,7 +3,6 @@
 
 import base64
 import logging
-import queue
 import re
 import threading
 import time
@@ -18,7 +17,7 @@ from gi.repository import GLib, Gst
 import numpy as np
 import torch
 import yaml
-from rfdetr import RFDETRBase
+from rfdetr import RFDETRBase, RFDETRLarge, RFDETRMedium, RFDETRSmall, RFDETRNano
 
 log = logging.getLogger("rf-detr-detector")
 
@@ -62,6 +61,17 @@ def load_config(path: str) -> dict:
         raise ValueError(f"confidence_threshold {threshold} out of range (0.0–1.0)")
     cfg["confidence_threshold"] = threshold
 
+    valid_models = ("nano", "small", "base", "medium", "large")
+    model = cfg.get("model", "base")
+    if model not in valid_models:
+        raise ValueError(f"model {model!r} must be one of {valid_models}")
+    cfg["model"] = model
+
+    target_fps = float(cfg.get("target_fps", 1.0))
+    if not (0.1 <= target_fps <= 30.0):
+        raise ValueError(f"target_fps {target_fps} out of range (0.1–30.0)")
+    cfg["target_fps"] = target_fps
+
     return cfg
 
 
@@ -86,7 +96,8 @@ def build_payload(
 class H264Decoder:
     """GStreamer H264 decoder — CPU fallback (avdec_h264 → RGB numpy).
 
-    Used when CUDA is not available. Outputs HWC uint8 numpy arrays.
+    Decoded frames are stored in a single overwriting slot so pull() always
+    returns the most recent frame, not a stale buffered one.
     """
 
     _PIPELINE = (
@@ -104,7 +115,8 @@ class H264Decoder:
         self._pipeline = Gst.parse_launch(self._PIPELINE)
         self._appsrc = self._pipeline.get_by_name("src")
         self._appsink = self._pipeline.get_by_name("sink")
-        self._frame_queue: queue.Queue[np.ndarray] = queue.Queue(maxsize=2)
+        self._latest_frame: "np.ndarray | None" = None
+        self._frame_lock = threading.Lock()
         self._appsink.connect("new-sample", self._on_new_sample)
         self._pipeline.set_state(Gst.State.PLAYING)
         self._loop = GLib.MainLoop()
@@ -115,11 +127,12 @@ class H264Decoder:
         buf = Gst.Buffer.new_wrapped(h264_bytes)
         self._appsrc.emit("push-buffer", buf)
 
-    def pull(self, timeout: float = 0.5) -> "np.ndarray | None":
-        try:
-            return self._frame_queue.get(timeout=timeout)
-        except queue.Empty:
-            return None
+    def pull(self) -> "np.ndarray | None":
+        """Return and consume the latest decoded frame, or None if none ready."""
+        with self._frame_lock:
+            frame = self._latest_frame
+            self._latest_frame = None
+            return frame
 
     def close(self) -> None:
         self._appsrc.emit("end-of-stream")
@@ -143,10 +156,8 @@ class H264Decoder:
                 .copy()
             )
             buf.unmap(mapinfo)
-            try:
-                self._frame_queue.put_nowait(frame)
-            except queue.Full:
-                pass
+            with self._frame_lock:
+                self._latest_frame = frame
         return Gst.FlowReturn.OK
 
 
@@ -156,13 +167,8 @@ class H264DecoderCUDA:
     Pipeline: nvv4l2decoder (Jetson hardware H264 decode) → nvvidconv (VIC
     color conversion NV12→RGB) → CPU-side appsink → torch CHW tensor on CUDA.
 
-    On Jetson Orin the iGPU uses SURFACE_ARRAY NVMM buffers (not linear CUDA
-    device memory), so a direct zero-copy CUDA pointer is not available without
-    EGL+CUDA inter-op. Instead, nvvidconv converts on the VIC and gives us CPU
-    RGB bytes, which we move to CUDA with a single non-blocking H2D transfer.
-
-    The main benefit over avdec_h264 (CPU decoder) is that nvv4l2decoder uses
-    the dedicated NVDEC block: no CPU cycles spent on H264 decoding.
+    Decoded frames are stored in a single overwriting slot so pull() always
+    returns the most recent frame, not a stale buffered one.
     """
 
     # nvvidconv does not support RGB output — use RGBA then drop the alpha channel
@@ -181,7 +187,8 @@ class H264DecoderCUDA:
         self._pipeline = Gst.parse_launch(self._PIPELINE)
         self._appsrc = self._pipeline.get_by_name("src")
         self._appsink = self._pipeline.get_by_name("sink")
-        self._frame_queue: queue.Queue[torch.Tensor] = queue.Queue(maxsize=2)
+        self._latest_frame: "torch.Tensor | None" = None
+        self._frame_lock = threading.Lock()
         self._appsink.connect("new-sample", self._on_new_sample)
         self._pipeline.set_state(Gst.State.PLAYING)
         self._loop = GLib.MainLoop()
@@ -192,12 +199,12 @@ class H264DecoderCUDA:
         buf = Gst.Buffer.new_wrapped(h264_bytes)
         self._appsrc.emit("push-buffer", buf)
 
-    def pull(self, timeout: float = 0.5) -> "torch.Tensor | None":
-        """Return a (C, H, W) float32 CUDA tensor [0,1], or None."""
-        try:
-            return self._frame_queue.get(timeout=timeout)
-        except queue.Empty:
-            return None
+    def pull(self) -> "torch.Tensor | None":
+        """Return and consume the latest (C, H, W) float32 CUDA tensor [0,1], or None."""
+        with self._frame_lock:
+            frame = self._latest_frame
+            self._latest_frame = None
+            return frame
 
     def close(self) -> None:
         self._appsrc.emit("end-of-stream")
@@ -229,10 +236,8 @@ class H264DecoderCUDA:
                 .to(dtype=torch.float32, device="cuda", non_blocking=True)
                 .div_(255.0)
             )
-            try:
-                self._frame_queue.put_nowait(tensor)
-            except queue.Full:
-                pass
+            with self._frame_lock:
+                self._latest_frame = tensor
         return Gst.FlowReturn.OK
 
 
@@ -243,11 +248,21 @@ class Detector:
     (GPU path — RF-DETR moves it to model.device automatically).
     """
 
-    def __init__(self, confidence_threshold: float = 0.5, device: str = "cpu") -> None:
-        log.info("Loading RF-DETR model (device=%s)...", device)
-        self._model = RFDETRBase(device=device)
+    _MODEL_CLASSES = {
+        "nano": RFDETRNano,
+        "small": RFDETRSmall,
+        "base": RFDETRBase,
+        "medium": RFDETRMedium,
+        "large": RFDETRLarge,
+    }
+
+    def __init__(self, confidence_threshold: float = 0.5, device: str = "cpu", model: str = "base") -> None:
+        model_cls = self._MODEL_CLASSES[model]
+        log.info("Loading RF-DETR model (size=%s, device=%s)...", model, device)
+        self._model = model_cls(device=device)
+        self._model.optimize_for_inference()
         self._threshold = confidence_threshold
-        log.info("RF-DETR model loaded.")
+        log.info("RF-DETR model loaded and optimized (size=%s).", model)
 
     def detect(self, image) -> list[dict]:
         """Run inference. image may be np.ndarray (HWC uint8) or torch.Tensor (CHW float [0,1])."""
@@ -289,16 +304,19 @@ class RfDetrDetectorNode:
     def __init__(self, ctx, config: dict) -> None:
         self._ctx = ctx
         self._subscribe_topic = config["subscribe_topic"]
+        self._target_fps = config.get("target_fps", 1.0)
 
         self._pub = ctx.publisher_json(config["publish_topic"])
 
         cuda_ok = torch.cuda.is_available()
+        model_size = config.get("model", "base")
         if cuda_ok:
             log.info("CUDA available — using nvv4l2decoder (NVDEC) + H2D CUDA tensor path")
             self._decoder = H264DecoderCUDA()
             self._detector = Detector(
                 confidence_threshold=config["confidence_threshold"],
                 device="cuda",
+                model=model_size,
             )
         else:
             log.info("CUDA not available — using CPU avdec_h264 path")
@@ -306,6 +324,7 @@ class RfDetrDetectorNode:
             self._detector = Detector(
                 confidence_threshold=config["confidence_threshold"],
                 device="cpu",
+                model=model_size,
             )
 
         from bubbaloop_sdk import ProtoDecoder
@@ -320,66 +339,73 @@ class RfDetrDetectorNode:
         self._schema_key = ctx.topic(f"{source_instance}/schema")
 
         log.info(
-            "Subscribing to %s, publishing to %s (schema: %s)",
+            "Subscribing to %s, publishing to %s at %.1f fps (schema: %s)",
             ctx.topic(self._subscribe_topic),
             ctx.topic(config["publish_topic"]),
+            self._target_fps,
             self._schema_key,
         )
 
     def run(self) -> None:
         ctx = self._ctx
 
+        # Subscriber: decode H264 and keep the latest frame ready — no inference here.
         def _on_frame(sample) -> None:
-            t0 = time.monotonic()
-
             data = self._proto.decode(sample, schema_key=self._schema_key)
             if data is None:
                 return
-
             h264_bytes = data.get("data")
             if not h264_bytes:
                 return
-
             if isinstance(h264_bytes, str):
                 h264_bytes = base64.b64decode(h264_bytes)
-
-            header = data.get("header") or {}
-            frame_id = header.get("frame_id", ctx.instance_name)
-
-            t1 = time.monotonic()
             self._decoder.push(h264_bytes)
-            frame = self._decoder.pull(timeout=0.5)
-            if frame is None:
-                return
-            t2 = time.monotonic()
 
-            detections = self._detector.detect(frame)
-            t3 = time.monotonic()
+        # Inference thread: fires at target_fps, grabs the latest decoded frame.
+        def _inference_loop() -> None:
+            interval = 1.0 / self._target_fps
+            next_run = time.monotonic() + interval
+            while not ctx._shutdown.is_set():
+                now = time.monotonic()
+                sleep_for = next_run - now
+                if sleep_for > 0:
+                    time.sleep(sleep_for)
+                next_run += interval
 
-            payload = build_payload(
-                frame_id=frame_id,
-                machine_id=ctx.machine_id,
-                scope=ctx.scope,
-                sequence=self._seq,
-                detections=detections,
-            )
-            self._pub.put(payload)
-            self._seq += 1
+                frame = self._decoder.pull()
+                if frame is None:
+                    continue
 
-            if self._seq % 30 == 0:
+                header_frame_id = ctx.instance_name  # fallback; header not tracked here
+
+                t0 = time.monotonic()
+                detections = self._detector.detect(frame)
+                t1 = time.monotonic()
+
+                payload = build_payload(
+                    frame_id=header_frame_id,
+                    machine_id=ctx.machine_id,
+                    scope=ctx.scope,
+                    sequence=self._seq,
+                    detections=detections,
+                )
+                self._pub.put(payload)
+                self._seq += 1
+
                 log.info(
-                    "seq=%d detections=%d decode=%.1fms gst=%.1fms infer=%.1fms total=%.1fms",
+                    "seq=%d detections=%d infer=%.1fms",
                     self._seq,
                     len(detections),
                     (t1 - t0) * 1000,
-                    (t2 - t1) * 1000,
-                    (t3 - t2) * 1000,
-                    (t3 - t0) * 1000,
                 )
+
+        inference_thread = threading.Thread(target=_inference_loop, daemon=True, name="inference")
+        inference_thread.start()
 
         sub = ctx.session.declare_subscriber(ctx.topic(self._subscribe_topic), _on_frame)
         ctx._shutdown.wait()
         sub.undeclare()
+        inference_thread.join(timeout=2.0)
         self._decoder.close()
         log.info(
             "rf-detr-detector shutdown complete (processed %d frames)", self._seq
