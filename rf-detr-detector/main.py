@@ -93,85 +93,18 @@ def build_payload(
     }
 
 
-class H264Decoder:
-    """GStreamer H264 decoder — CPU fallback (avdec_h264 → RGB numpy).
-
-    Decoded frames are stored in a single overwriting slot so pull() always
-    returns the most recent frame, not a stale buffered one.
-    """
-
-    _PIPELINE = (
-        "appsrc name=src format=3 block=false max-bytes=2000000 "
-        "caps=video/x-h264,stream-format=byte-stream,alignment=au "
-        "! h264parse "
-        "! avdec_h264 "
-        "! videoconvert "
-        "! video/x-raw,format=RGB "
-        "! appsink name=sink emit-signals=true sync=false max-buffers=2 drop=true"
-    )
-
-    def __init__(self) -> None:
-        Gst.init(None)
-        self._pipeline = Gst.parse_launch(self._PIPELINE)
-        self._appsrc = self._pipeline.get_by_name("src")
-        self._appsink = self._pipeline.get_by_name("sink")
-        self._latest_frame: "np.ndarray | None" = None
-        self._frame_lock = threading.Lock()
-        self._appsink.connect("new-sample", self._on_new_sample)
-        self._pipeline.set_state(Gst.State.PLAYING)
-        self._loop = GLib.MainLoop()
-        self._thread = threading.Thread(target=self._loop.run, daemon=True)
-        self._thread.start()
-
-    def push(self, h264_bytes: bytes) -> None:
-        buf = Gst.Buffer.new_wrapped(h264_bytes)
-        self._appsrc.emit("push-buffer", buf)
-
-    def pull(self) -> "np.ndarray | None":
-        """Return and consume the latest decoded frame, or None if none ready."""
-        with self._frame_lock:
-            frame = self._latest_frame
-            self._latest_frame = None
-            return frame
-
-    def close(self) -> None:
-        self._appsrc.emit("end-of-stream")
-        self._pipeline.set_state(Gst.State.NULL)
-        self._loop.quit()
-
-    def _on_new_sample(self, sink) -> Gst.FlowReturn:
-        sample = sink.emit("pull-sample")
-        if sample is None:
-            return Gst.FlowReturn.ERROR
-        buf = sample.get_buffer()
-        caps = sample.get_caps()
-        struct = caps.get_structure(0)
-        width = struct.get_value("width")
-        height = struct.get_value("height")
-        ok, mapinfo = buf.map(Gst.MapFlags.READ)
-        if ok:
-            frame = (
-                np.frombuffer(mapinfo.data, dtype=np.uint8)
-                .reshape(height, width, 3)
-                .copy()
-            )
-            buf.unmap(mapinfo)
-            with self._frame_lock:
-                self._latest_frame = frame
-        return Gst.FlowReturn.OK
-
-
 class H264DecoderCUDA:
     """GStreamer H264 decoder using Jetson NVDEC hardware — outputs CHW float CUDA tensor.
 
-    Pipeline: nvv4l2decoder (Jetson hardware H264 decode) → nvvidconv (VIC
-    color conversion NV12→RGB) → CPU-side appsink → torch CHW tensor on CUDA.
+    Pipeline: nvv4l2decoder (Jetson hardware H264 decode) → nvvidconv (VIC color
+    conversion NV12→RGBA) → CPU-side appsink → torch CHW float32 CUDA tensor.
 
-    Decoded frames are stored in a single overwriting slot so pull() always
-    returns the most recent frame, not a stale buffered one.
+    nvvidconv does not support RGB output so we use RGBA and drop the alpha channel.
+    The VIC handles color conversion; a single non-blocking H2D copy moves the result
+    to CUDA. Decoded frames are stored in a single overwriting slot so pull() always
+    returns the most recent frame.
     """
 
-    # nvvidconv does not support RGB output — use RGBA then drop the alpha channel
     _PIPELINE = (
         "appsrc name=src format=3 block=false max-bytes=2000000 "
         "caps=video/x-h264,stream-format=byte-stream,alignment=au "
@@ -222,7 +155,6 @@ class H264DecoderCUDA:
         height = struct.get_value("height")
         ok, mapinfo = buf.map(Gst.MapFlags.READ)
         if ok:
-            # CPU RGBA bytes from nvvidconv — one H2D transfer to CUDA
             frame_cpu = (
                 np.frombuffer(mapinfo.data, dtype=np.uint8)
                 .reshape(height, width, 4)
@@ -242,11 +174,7 @@ class H264DecoderCUDA:
 
 
 class Detector:
-    """RF-DETR inference wrapper.
-
-    Accepts either a PIL/numpy image (CPU path) or a normalized CHW torch.Tensor
-    (GPU path — RF-DETR moves it to model.device automatically).
-    """
+    """RF-DETR inference wrapper. Accepts a CHW float32 CUDA tensor in [0,1]."""
 
     _MODEL_CLASSES = {
         "nano": RFDETRNano,
@@ -256,28 +184,16 @@ class Detector:
         "large": RFDETRLarge,
     }
 
-    def __init__(self, confidence_threshold: float = 0.5, device: str = "cpu", model: str = "base") -> None:
+    def __init__(self, confidence_threshold: float = 0.5, model: str = "base") -> None:
         model_cls = self._MODEL_CLASSES[model]
-        log.info("Loading RF-DETR model (size=%s, device=%s)...", model, device)
-        self._model = model_cls(device=device)
+        log.info("Loading RF-DETR model (size=%s, device=cuda)...", model)
+        self._model = model_cls(device="cuda")
         self._model.optimize_for_inference()
         self._threshold = confidence_threshold
         log.info("RF-DETR model loaded and optimized (size=%s).", model)
 
-    def detect(self, image) -> list[dict]:
-        """Run inference. image may be np.ndarray (HWC uint8) or torch.Tensor (CHW float [0,1]).
-
-        torch.Tensor is passed directly to RF-DETR (no PIL roundtrip).
-        np.ndarray (HWC uint8) is converted to CHW float32 tensor first.
-        """
-        if isinstance(image, np.ndarray):
-            image = (
-                torch.from_numpy(image)
-                .permute(2, 0, 1)
-                .to(dtype=torch.float32)
-                .div_(255.0)
-            )
-
+    def detect(self, image: torch.Tensor) -> list[dict]:
+        """Run inference on a CHW float32 CUDA tensor. Returns list of detections."""
         try:
             result = self._model.predict(image, threshold=self._threshold)
         except Exception as e:
@@ -312,28 +228,14 @@ class RfDetrDetectorNode:
     def __init__(self, ctx, config: dict) -> None:
         self._ctx = ctx
         self._subscribe_topic = config["subscribe_topic"]
-        self._target_fps = config.get("target_fps", 1.0)
+        self._target_fps = config["target_fps"]
 
         self._pub = ctx.publisher_json(config["publish_topic"])
-
-        cuda_ok = torch.cuda.is_available()
-        model_size = config.get("model", "base")
-        if cuda_ok:
-            log.info("CUDA available — using nvv4l2decoder (NVDEC) + H2D CUDA tensor path")
-            self._decoder = H264DecoderCUDA()
-            self._detector = Detector(
-                confidence_threshold=config["confidence_threshold"],
-                device="cuda",
-                model=model_size,
-            )
-        else:
-            log.info("CUDA not available — using CPU avdec_h264 path")
-            self._decoder = H264Decoder()
-            self._detector = Detector(
-                confidence_threshold=config["confidence_threshold"],
-                device="cpu",
-                model=model_size,
-            )
+        self._decoder = H264DecoderCUDA()
+        self._detector = Detector(
+            confidence_threshold=config["confidence_threshold"],
+            model=config["model"],
+        )
 
         from bubbaloop_sdk import ProtoDecoder
 
@@ -384,14 +286,12 @@ class RfDetrDetectorNode:
                 if frame is None:
                     continue
 
-                header_frame_id = ctx.instance_name  # fallback; header not tracked here
-
                 t0 = time.monotonic()
                 detections = self._detector.detect(frame)
                 t1 = time.monotonic()
 
                 payload = build_payload(
-                    frame_id=header_frame_id,
+                    frame_id=ctx.instance_name,
                     machine_id=ctx.machine_id,
                     scope=ctx.scope,
                     sequence=self._seq,
@@ -415,9 +315,7 @@ class RfDetrDetectorNode:
         sub.undeclare()
         inference_thread.join(timeout=2.0)
         self._decoder.close()
-        log.info(
-            "rf-detr-detector shutdown complete (processed %d frames)", self._seq
-        )
+        log.info("rf-detr-detector shutdown complete (processed %d frames)", self._seq)
 
 
 if __name__ == "__main__":
