@@ -222,7 +222,7 @@ class RfDetrDetectorNode:
                 payload = build_payload(
                     frame_id=ctx.instance_name,
                     machine_id=ctx.machine_id,
-                    scope=ctx.scope,
+                    scope="",
                     sequence=self._seq,
                     detections=detections,
                 )
