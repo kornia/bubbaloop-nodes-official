@@ -1,6 +1,6 @@
-name: rf_detr_tapo_terrace
+name: tapo_entrance_detector
 subscribe_topic: camera/tapo_terrace/compressed
 publish_topic: camera/tapo_terrace/detections
-confidence_threshold: 0.5
+confidence_threshold: 0.7
 model: large
 target_fps: 1.0
