@@ -149,6 +149,7 @@ class RfDetrDetectorNode:
         instance_name = config["name"]
         topic_key = instance_name.removesuffix("_detector")
 
+        self._topic_key = topic_key
         self._raw_topic = ctx.topic(f"{topic_key}/raw")
         self._raw_width = int(config.get("raw_width", 560))
         self._raw_height = int(config.get("raw_height", 560))
@@ -165,7 +166,7 @@ class RfDetrDetectorNode:
         self._seq = 0
 
         log.info(
-            "Subscribing to %s (SHM RGBA %dx%d), publishing to %s at %.1f fps",
+            "Subscribing to %s (RGBA %dx%d), publishing to %s at %.1f fps",
             self._raw_topic,
             self._raw_width,
             self._raw_height,
@@ -179,22 +180,22 @@ class RfDetrDetectorNode:
         w, h = self._raw_width, self._raw_height
         expected = w * h * 4
 
-        def _on_raw_frame(sample) -> None:
-            # Payload is raw RGBA bytes published from Zenoh SHM — no protobuf wrapper.
-            raw_bytes = bytes(sample.payload)
-            if len(raw_bytes) != expected:
-                return
+        sub = ctx.subscriber_raw(f"{self._topic_key}/raw")
 
-            # RGBA HWC uint8 → RGB CHW float32 [0,1] on CUDA (drop alpha, non-blocking H2D)
-            frame_cpu = np.frombuffer(raw_bytes, dtype=np.uint8).reshape(h, w, 4)
-            tensor = (
-                torch.from_numpy(frame_cpu[:, :, :3].copy())
-                .permute(2, 0, 1)
-                .to(dtype=torch.float32, device="cuda", non_blocking=True)
-                .div_(255.0)
-            )
-            with self._frame_lock:
-                self._latest_frame = tensor
+        def _receive_loop() -> None:
+            for raw_bytes in sub:
+                if len(raw_bytes) != expected:
+                    continue
+                # RGBA HWC uint8 → RGB CHW float32 [0,1] on CUDA (drop alpha, non-blocking H2D)
+                frame_cpu = np.frombuffer(raw_bytes, dtype=np.uint8).reshape(h, w, 4)
+                tensor = (
+                    torch.from_numpy(frame_cpu[:, :, :3].copy())
+                    .permute(2, 0, 1)
+                    .to(dtype=torch.float32, device="cuda", non_blocking=True)
+                    .div_(255.0)
+                )
+                with self._frame_lock:
+                    self._latest_frame = tensor
 
         def _inference_loop() -> None:
             interval = 1.0 / self._target_fps
@@ -235,10 +236,11 @@ class RfDetrDetectorNode:
                     (t1 - t0) * 1000,
                 )
 
+        receive_thread = threading.Thread(target=_receive_loop, daemon=True, name="receive")
         inference_thread = threading.Thread(target=_inference_loop, daemon=True, name="inference")
+        receive_thread.start()
         inference_thread.start()
 
-        sub = ctx.session.declare_subscriber(self._raw_topic, _on_raw_frame)
         ctx._shutdown.wait()
         sub.undeclare()
         inference_thread.join(timeout=2.0)
