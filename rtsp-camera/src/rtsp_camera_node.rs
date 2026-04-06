@@ -1,8 +1,14 @@
 use crate::config::Config;
-use crate::h264_capture::{H264Frame, RgbaFrame, H264StreamCapture};
-use crate::proto::{CompressedImage, RawImage};
+use crate::h264_capture::{H264Frame, H264StreamCapture};
+use crate::proto::CompressedImage;
 use bubbaloop_node::publisher::ProtoPublisher;
 use bubbaloop_node::schemas::Header;
+use bubbaloop_node::zenoh::bytes::ZBytes;
+use bubbaloop_node::zenoh::shm::{
+    BlockOn, GarbageCollect, PosixShmProviderBackend, ShmProviderBuilder,
+};
+use bubbaloop_node::zenoh::Wait;
+use bubbaloop_node::ShmPublisher;
 use std::sync::Arc;
 
 /// Extract NAL unit types from an H264 byte-stream (Annex B format).
@@ -50,27 +56,11 @@ fn frame_to_compressed_image(
     }
 }
 
-fn rgba_to_raw_image(frame: RgbaFrame, camera_name: &str, machine_id: &str, scope: &str) -> RawImage {
-    RawImage {
-        header: Some(Header {
-            acq_time: frame.pts,
-            pub_time: get_pub_time(),
-            sequence: frame.sequence,
-            frame_id: camera_name.to_string(),
-            machine_id: machine_id.to_string(),
-            scope: scope.to_string(),
-        }),
-        width: frame.width,
-        height: frame.height,
-        encoding: "rgba8".to_string(),
-        step: frame.step(),
-        data: frame.data,
-    }
-}
-
 /// RTSP Camera node — captures a single H264 RTSP stream and publishes:
 ///   - `{key}/compressed` : H264 byte-stream (Annex-B, protobuf)
-///   - `{key}/raw`        : RGBA decoded frames (protobuf, over Zenoh SHM)
+///   - `{key}/raw`        : RGBA raw bytes resized to `raw_width × raw_height`,
+///                          published directly into a Zenoh SHM buffer (no protobuf).
+///                          Payload = `raw_width * raw_height * 4` raw RGBA bytes.
 pub struct RtspCameraNode {
     config: Config,
 }
@@ -87,7 +77,7 @@ impl bubbaloop_node::Node for RtspCameraNode {
         include_bytes!(concat!(env!("OUT_DIR"), "/descriptor.bin"))
     }
 
-    /// Enable Zenoh SHM so the raw RGBA topic benefits from zero-copy same-machine delivery.
+    /// SHM transport required — raw RGBA frames are published zero-copy.
     fn shm() -> bool {
         true
     }
@@ -106,30 +96,54 @@ impl bubbaloop_node::Node for RtspCameraNode {
         let key = self.config.topic_key().to_string();
         let compressed_suffix = format!("{key}/compressed");
         let raw_suffix = format!("{key}/raw");
+        let raw_width = self.config.raw_width;
+        let raw_height = self.config.raw_height;
+        let frame_size = (raw_width * raw_height * 4) as usize;
 
         let url = std::env::var("RTSP_URL").unwrap_or_else(|_| self.config.url.clone());
-        let capture = Arc::new(H264StreamCapture::new(&url, self.config.latency)?);
+        let capture = Arc::new(H264StreamCapture::new(
+            &url,
+            self.config.latency,
+            raw_width,
+            raw_height,
+        )?);
         capture.start()?;
 
         log::info!(
-            "Camera '{}' capturing from RTSP (latency={}ms)",
+            "Camera '{}' capturing from RTSP (latency={}ms, raw={}x{})",
             camera_name,
-            self.config.latency
+            self.config.latency,
+            raw_width,
+            raw_height,
         );
 
+        // Compressed topic: protobuf publisher (existing path, unchanged)
         let compressed_pub: ProtoPublisher<CompressedImage> =
             ctx.publisher_proto(&compressed_suffix).await?;
-        let raw_pub: ProtoPublisher<RawImage> =
-            ctx.publisher_proto(&raw_suffix).await?;
+
+        // Raw topic: raw ZBytes publisher — payload is Zenoh SHM buffer, no protobuf wrapper.
+        let raw_pub: ShmPublisher = ctx.publisher_shm(&raw_suffix).await?;
+
+        // SHM pool: 4 × frame_size gives enough room for BlockOn<GarbageCollect>
+        // to reclaim buffers the subscriber has already consumed.
+        let shm_pool_size = frame_size * 4;
+        let shm_backend = PosixShmProviderBackend::builder(shm_pool_size)
+            .wait()
+            .map_err(|e| bubbaloop_node::NodeError::Decode(format!("SHM backend: {e:?}")))?;
+        let shm_provider = ShmProviderBuilder::backend(shm_backend).wait();
+        let shm_layout = shm_provider
+            .alloc_layout(frame_size)
+            .map_err(|e| bubbaloop_node::NodeError::Decode(format!("SHM layout: {e:?}")))?;
 
         log::info!(
-            "[{}] compressed → {} | raw → {}",
+            "[{}] compressed → {} | raw (SHM {}×{}) → {}",
             camera_name,
             ctx.topic(&compressed_suffix),
+            raw_width,
+            raw_height,
             ctx.topic(&raw_suffix),
         );
 
-        // Keyframes are always published to avoid breaking the H264 decode chain.
         let frame_interval = self.config.frame_rate.map(|fps| {
             std::time::Duration::from_secs_f64(1.0 / fps as f64)
         });
@@ -177,7 +191,6 @@ impl bubbaloop_node::Node for RtspCameraNode {
 
                             let sequence = h264_frame.sequence;
 
-                            // Log NAL types for early frames to verify stream health
                             if published < 10 {
                                 let nal_types = extract_nal_types(h264_frame.as_slice());
                                 log::info!(
@@ -196,7 +209,6 @@ impl bubbaloop_node::Node for RtspCameraNode {
                                 published += 1;
                             }
 
-                            // Periodic FPS stats
                             let elapsed = last_log.elapsed();
                             if elapsed.as_secs() >= 1 {
                                 let frames_this_period = published - last_published_count;
@@ -216,14 +228,17 @@ impl bubbaloop_node::Node for RtspCameraNode {
                 result = capture.rgba_receiver().recv_async() => {
                     match result {
                         Ok(rgba_frame) => {
-                            let msg = rgba_to_raw_image(
-                                rgba_frame,
-                                &camera_name,
-                                &ctx.machine_id,
-                                &ctx.scope,
-                            );
-                            if raw_pub.put(&msg).await.is_ok() {
-                                raw_published += 1;
+                            // Alloc SHM buffer, copy RGBA bytes, publish zero-copy to subscriber.
+                            match shm_layout.alloc().with_policy::<BlockOn<GarbageCollect>>().await {
+                                Ok(mut sbuf) => {
+                                    sbuf[..frame_size].copy_from_slice(&rgba_frame.data);
+                                    if raw_pub.put(ZBytes::from(sbuf)).await.is_ok() {
+                                        raw_published += 1;
+                                    }
+                                }
+                                Err(e) => {
+                                    log::warn!("[{}] SHM alloc failed: {:?}", camera_name, e);
+                                }
                             }
                         }
                         Err(_) => break,

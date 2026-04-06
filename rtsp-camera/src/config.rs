@@ -16,10 +16,24 @@ pub struct Config {
     /// Target publish frame rate (frames per second, 1–120)
     #[serde(default)]
     pub frame_rate: Option<u32>,
+    /// Width to resize raw RGBA frames before publishing over SHM (default: 560)
+    #[serde(default = "default_raw_width")]
+    pub raw_width: u32,
+    /// Height to resize raw RGBA frames before publishing over SHM (default: 560)
+    #[serde(default = "default_raw_height")]
+    pub raw_height: u32,
 }
 
 fn default_latency() -> u32 {
     200
+}
+
+fn default_raw_width() -> u32 {
+    560
+}
+
+fn default_raw_height() -> u32 {
+    560
 }
 
 impl Config {

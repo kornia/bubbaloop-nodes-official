@@ -8,7 +8,6 @@ Topic key is derived from the instance name: `tapo_terrace_detector` → `tapo_t
 Schema is fetched live from the camera node's schema queryable.
 """
 
-import base64
 import logging
 import threading
 import time
@@ -150,10 +149,10 @@ class RfDetrDetectorNode:
         # Derive topic key: strip "_detector" suffix from instance name
         instance_name = config["name"]
         topic_key = instance_name.removesuffix("_detector")
-        camera_instance = topic_key + "_camera"
 
         self._raw_topic = ctx.topic(f"{topic_key}/raw")
-        self._schema_key = ctx.topic(f"{camera_instance}/schema")
+        self._raw_width = int(config.get("raw_width", 560))
+        self._raw_height = int(config.get("raw_height", 560))
 
         self._pub = ctx.publisher_json(f"{topic_key}/detections")
         self._detector = Detector(
@@ -161,18 +160,16 @@ class RfDetrDetectorNode:
             model=config["model"],
         )
 
-        from bubbaloop_sdk import ProtoDecoder
-        self._proto = ProtoDecoder(ctx.session)
-
         # Latest decoded frame slot — written by subscriber callback, read by inference loop
         self._latest_frame: "torch.Tensor | None" = None
         self._frame_lock = threading.Lock()
         self._seq = 0
 
         log.info(
-            "Subscribing to %s (schema: %s), publishing to %s at %.1f fps",
+            "Subscribing to %s (SHM RGBA %dx%d), publishing to %s at %.1f fps",
             self._raw_topic,
-            self._schema_key,
+            self._raw_width,
+            self._raw_height,
             ctx.topic(f"{topic_key}/detections"),
             self._target_fps,
         )
@@ -180,20 +177,17 @@ class RfDetrDetectorNode:
     def run(self) -> None:
         ctx = self._ctx
 
+        w, h = self._raw_width, self._raw_height
+        expected = w * h * 4
+
         def _on_raw_frame(sample) -> None:
-            data = self._proto.decode(sample, schema_key=self._schema_key)
-            if data is None:
+            # Payload is raw RGBA bytes published from Zenoh SHM — no protobuf wrapper.
+            raw_bytes = bytes(sample.payload)
+            if len(raw_bytes) != expected:
                 return
-            raw_bytes = data.get("data")
-            width = data.get("width")
-            height = data.get("height")
-            if not raw_bytes or not width or not height:
-                return
-            if isinstance(raw_bytes, str):
-                raw_bytes = base64.b64decode(raw_bytes)
 
             # RGBA HWC uint8 → RGB CHW float32 [0,1] on CUDA (drop alpha, non-blocking H2D)
-            frame_cpu = np.frombuffer(raw_bytes, dtype=np.uint8).reshape(height, width, 4)
+            frame_cpu = np.frombuffer(raw_bytes, dtype=np.uint8).reshape(h, w, 4)
             tensor = (
                 torch.from_numpy(frame_cpu[:, :, :3].copy())
                 .permute(2, 0, 1)
