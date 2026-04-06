@@ -180,7 +180,7 @@ class RfDetrDetectorNode:
         w, h = self._raw_width, self._raw_height
         expected = w * h * 4
 
-        sub = ctx.subscriber_raw_local(f"{self._topic_key}/raw")
+        sub = ctx.subscriber_local(f"{self._topic_key}/raw")
 
         def _receive_loop() -> None:
             for raw_bytes in sub:
