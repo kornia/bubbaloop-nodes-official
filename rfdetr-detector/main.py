@@ -276,12 +276,19 @@ class RfDetrDetectorNode:
         # (e.g. CUDA warm-up) don't cause catch-up bursts.
         def _inference_loop() -> None:
             interval = 1.0 / self._target_fps
+            next_run = time.monotonic()
             while not ctx._shutdown.is_set():
+                now = time.monotonic()
+                if now < next_run:
+                    time.sleep(min(0.05, next_run - now))
+                    continue
+
                 frame = self._decoder.pull()
                 if frame is None:
                     time.sleep(0.05)
                     continue
 
+                next_run = time.monotonic() + interval
                 t0 = time.monotonic()
                 detections = self._detector.detect(frame)
                 t1 = time.monotonic()
@@ -303,9 +310,6 @@ class RfDetrDetectorNode:
                     (t1 - t0) * 1000,
                 )
 
-                remaining = interval - (t1 - t0)
-                if remaining > 0:
-                    time.sleep(remaining)
 
         inference_thread = threading.Thread(target=_inference_loop, daemon=True, name="inference")
         inference_thread.start()
