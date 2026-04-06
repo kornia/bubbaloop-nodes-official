@@ -56,10 +56,10 @@ fn frame_to_compressed_image(
 }
 
 /// RTSP Camera node — captures a single H264 RTSP stream and publishes:
-///   - `{key}/compressed` : H264 byte-stream (Annex-B, protobuf)
-///   - `{key}/raw`        : RGBA raw bytes resized to `raw_width × raw_height`,
-///                          published directly into a Zenoh SHM buffer (no protobuf).
-///                          Payload = `raw_width * raw_height * 4` raw RGBA bytes.
+///   - `{key}/compressed`: H264 byte-stream (Annex-B, protobuf)
+///   - `{key}/raw`: RGBA raw bytes resized to `raw_width × raw_height`,
+///     published directly into a Zenoh SHM buffer (no protobuf).
+///     Payload = `raw_width * raw_height * 4` raw RGBA bytes.
 pub struct RtspCameraNode {
     config: Config,
 }
