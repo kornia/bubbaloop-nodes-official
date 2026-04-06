@@ -1,6 +1,6 @@
 use crate::config::Config;
-use crate::h264_capture::{H264Frame, H264StreamCapture};
-use crate::proto::CompressedImage;
+use crate::h264_capture::{H264Frame, RgbaFrame, H264StreamCapture};
+use crate::proto::{CompressedImage, RawImage};
 use bubbaloop_node::publisher::ProtoPublisher;
 use bubbaloop_node::schemas::Header;
 use std::sync::Arc;
@@ -50,7 +50,27 @@ fn frame_to_compressed_image(
     }
 }
 
-/// RTSP Camera node -- captures a single H264 stream and publishes compressed frames.
+fn rgba_to_raw_image(frame: RgbaFrame, camera_name: &str, machine_id: &str, scope: &str) -> RawImage {
+    RawImage {
+        header: Some(Header {
+            acq_time: frame.pts,
+            pub_time: get_pub_time(),
+            sequence: frame.sequence,
+            frame_id: camera_name.to_string(),
+            machine_id: machine_id.to_string(),
+            scope: scope.to_string(),
+        }),
+        width: frame.width,
+        height: frame.height,
+        encoding: "rgba8".to_string(),
+        step: frame.step(),
+        data: frame.data,
+    }
+}
+
+/// RTSP Camera node — captures a single H264 RTSP stream and publishes:
+///   - `{key}/compressed` : H264 byte-stream (Annex-B, protobuf)
+///   - `{key}/raw`        : RGBA decoded frames (protobuf, over Zenoh SHM)
 pub struct RtspCameraNode {
     config: Config,
 }
@@ -67,6 +87,11 @@ impl bubbaloop_node::Node for RtspCameraNode {
         include_bytes!(concat!(env!("OUT_DIR"), "/descriptor.bin"))
     }
 
+    /// Enable Zenoh SHM so the raw RGBA topic benefits from zero-copy same-machine delivery.
+    fn shm() -> bool {
+        true
+    }
+
     async fn init(
         _ctx: &bubbaloop_node::NodeContext,
         config: &Config,
@@ -78,7 +103,9 @@ impl bubbaloop_node::Node for RtspCameraNode {
 
     async fn run(self, ctx: bubbaloop_node::NodeContext) -> anyhow::Result<()> {
         let camera_name = self.config.name.clone();
-        let compressed_suffix = format!("{}/compressed", self.config.topic_key());
+        let key = self.config.topic_key().to_string();
+        let compressed_suffix = format!("{key}/compressed");
+        let raw_suffix = format!("{key}/raw");
 
         let url = std::env::var("RTSP_URL").unwrap_or_else(|_| self.config.url.clone());
         let capture = Arc::new(H264StreamCapture::new(&url, self.config.latency)?);
@@ -92,8 +119,15 @@ impl bubbaloop_node::Node for RtspCameraNode {
 
         let compressed_pub: ProtoPublisher<CompressedImage> =
             ctx.publisher_proto(&compressed_suffix).await?;
+        let raw_pub: ProtoPublisher<RawImage> =
+            ctx.publisher_proto(&raw_suffix).await?;
 
-        log::info!("[{}] Publishing to: {}", camera_name, ctx.topic(&compressed_suffix));
+        log::info!(
+            "[{}] compressed → {} | raw → {}",
+            camera_name,
+            ctx.topic(&compressed_suffix),
+            ctx.topic(&raw_suffix),
+        );
 
         // Keyframes are always published to avoid breaking the H264 decode chain.
         let frame_interval = self.config.frame_rate.map(|fps| {
@@ -111,6 +145,7 @@ impl bubbaloop_node::Node for RtspCameraNode {
 
         let mut shutdown_rx = ctx.shutdown_rx.clone();
         let mut published: u64 = 0;
+        let mut raw_published: u64 = 0;
         let mut dropped: u64 = 0;
         let mut last_log = std::time::Instant::now();
         let mut last_published_count: u64 = 0;
@@ -125,7 +160,7 @@ impl bubbaloop_node::Node for RtspCameraNode {
                     break;
                 }
 
-                result = capture.receiver().recv_async() => {
+                result = capture.h264_receiver().recv_async() => {
                     match result {
                         Ok(h264_frame) => {
                             let now = std::time::Instant::now();
@@ -167,11 +202,28 @@ impl bubbaloop_node::Node for RtspCameraNode {
                                 let frames_this_period = published - last_published_count;
                                 let fps = frames_this_period as f64 / elapsed.as_secs_f64();
                                 log::info!(
-                                    "[{}] seq={}, total={}, fps={:.1}, dropped={}",
-                                    camera_name, sequence, published, fps, dropped
+                                    "[{}] seq={}, compressed={}, raw={}, fps={:.1}, dropped={}",
+                                    camera_name, sequence, published, raw_published, fps, dropped
                                 );
                                 last_published_count = published;
                                 last_log = std::time::Instant::now();
+                            }
+                        }
+                        Err(_) => break,
+                    }
+                }
+
+                result = capture.rgba_receiver().recv_async() => {
+                    match result {
+                        Ok(rgba_frame) => {
+                            let msg = rgba_to_raw_image(
+                                rgba_frame,
+                                &camera_name,
+                                &ctx.machine_id,
+                                &ctx.scope,
+                            );
+                            if raw_pub.put(&msg).await.is_ok() {
+                                raw_published += 1;
                             }
                         }
                         Err(_) => break,
@@ -184,7 +236,10 @@ impl bubbaloop_node::Node for RtspCameraNode {
             log::error!("[{}] Failed to close capture: {}", camera_name, e);
         }
 
-        log::info!("Camera '{}' shutdown complete (published: {})", camera_name, published);
+        log::info!(
+            "Camera '{}' shutdown complete (compressed={}, raw={})",
+            camera_name, published, raw_published
+        );
         Ok(())
     }
 }
