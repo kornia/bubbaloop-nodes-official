@@ -16,4 +16,4 @@ pip = "*"
 eclipse-zenoh = ">=1.0"
 requests = ">=2.31"
 pyyaml = ">=6.0"
-bubbaloop-sdk = { git = "https://github.com/kornia/bubbaloop.git", branch = "fix/local-topic-raw-frames", subdirectory = "python-sdk" }
+bubbaloop-sdk = { git = "https://github.com/kornia/bubbaloop.git", branch = "main", subdirectory = "python-sdk" }
