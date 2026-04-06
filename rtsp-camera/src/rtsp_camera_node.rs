@@ -40,7 +40,6 @@ fn frame_to_compressed_image(
     frame: H264Frame,
     camera_name: &str,
     machine_id: &str,
-    scope: &str,
 ) -> CompressedImage {
     CompressedImage {
         header: Some(Header {
@@ -49,7 +48,7 @@ fn frame_to_compressed_image(
             sequence: frame.sequence,
             frame_id: camera_name.to_string(),
             machine_id: machine_id.to_string(),
-            scope: scope.to_string(),
+            scope: String::new(),
         }),
         format: "h264".to_string(),
         data: frame.as_slice().into(),
@@ -200,7 +199,6 @@ impl bubbaloop_node::Node for RtspCameraNode {
                                 h264_frame,
                                 &camera_name,
                                 &ctx.machine_id,
-                                &ctx.scope,
                             );
                             if compressed_pub.put(&msg).await.is_ok() {
                                 published += 1;
