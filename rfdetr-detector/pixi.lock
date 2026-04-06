@@ -41,7 +41,7 @@ environments:
       - pypi: https://files.pythonhosted.org/packages/1e/d3/26bf1008eb3d2daa8ef4cacc7f3bfdc11818d111f7e2d0201bc6e3b49d45/annotated_doc-0.0.4-py3-none-any.whl
       - pypi: https://files.pythonhosted.org/packages/78/b6/6307fbef88d9b5ee7421e68d78a9f162e0da4900bc5f5793f6d3d0e34fb8/annotated_types-0.7.0-py3-none-any.whl
       - pypi: https://files.pythonhosted.org/packages/da/42/e921fccf5015463e32a3cf6ee7f980a6ed0f395ceeaa45060b61d86486c2/anyio-4.13.0-py3-none-any.whl
-      - pypi: git+https://github.com/kornia/bubbaloop.git?subdirectory=python-sdk&branch=fix%2Flocal-topic-raw-frames#d17c7d9978d2f9de9721f1d5b87dd14bc9608a05
+      - pypi: git+https://github.com/kornia/bubbaloop.git?subdirectory=python-sdk&branch=main#73055cf4da54ef65ce03cc257c3d9e141b15508d
       - pypi: https://files.pythonhosted.org/packages/9a/3c/c17fb3ca2d9c3acff52e30b309f538586f9f5b9c9cf454f3845fc9af4881/certifi-2026.2.25-py3-none-any.whl
       - pypi: https://files.pythonhosted.org/packages/24/47/b192933e94b546f1b1fe4df9cc1f84fcdbf2359f8d1081d46dd029b50207/charset_normalizer-3.4.7-cp310-cp310-manylinux2014_aarch64.manylinux_2_17_aarch64.manylinux_2_28_aarch64.whl
       - pypi: https://files.pythonhosted.org/packages/e4/20/71885d8b97d4f3dde17b1fdb92dbd4908b00541c5a3379787137285f602e/click-8.3.2-py3-none-any.whl
@@ -214,7 +214,7 @@ packages:
   - typing-extensions>=4.5 ; python_full_version < '3.13'
   - trio>=0.32.0 ; extra == 'trio'
   requires_python: '>=3.10'
-- pypi: git+https://github.com/kornia/bubbaloop.git?subdirectory=python-sdk&branch=fix%2Flocal-topic-raw-frames#d17c7d9978d2f9de9721f1d5b87dd14bc9608a05
+- pypi: git+https://github.com/kornia/bubbaloop.git?subdirectory=python-sdk&branch=main#73055cf4da54ef65ce03cc257c3d9e141b15508d
   name: bubbaloop-sdk
   version: 0.1.0
   requires_dist:

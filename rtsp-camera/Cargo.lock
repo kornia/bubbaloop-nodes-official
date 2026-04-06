@@ -278,7 +278,7 @@ dependencies = [
 [[package]]
 name = "bubbaloop-node"
 version = "0.1.0"
-source = "git+https://github.com/kornia/bubbaloop.git?branch=fix%2Flocal-topic-raw-frames#d17c7d9978d2f9de9721f1d5b87dd14bc9608a05"
+source = "git+https://github.com/kornia/bubbaloop.git?branch=main#73055cf4da54ef65ce03cc257c3d9e141b15508d"
 dependencies = [
  "anyhow",
  "argh",
@@ -302,7 +302,7 @@ dependencies = [
 [[package]]
 name = "bubbaloop-node-build"
 version = "0.1.0"
-source = "git+https://github.com/kornia/bubbaloop.git?branch=fix%2Flocal-topic-raw-frames#d17c7d9978d2f9de9721f1d5b87dd14bc9608a05"
+source = "git+https://github.com/kornia/bubbaloop.git?branch=main#73055cf4da54ef65ce03cc257c3d9e141b15508d"
 dependencies = [
  "prost-build",
 ]
