@@ -2,3 +2,6 @@ name: tapo_entrance_camera
 url: "rtsp://tapo_entrance:clawd2026@192.168.1.141:554/stream1"
 latency: 50
 frame_rate: 10
+hw_accel: nvidia   # nvidia (Jetson VIC) or cpu (software, portable)
+raw_width: 560     # resize target for SHM raw frames
+raw_height: 560
