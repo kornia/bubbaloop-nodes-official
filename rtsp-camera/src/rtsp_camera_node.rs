@@ -78,7 +78,7 @@ impl bubbaloop_node::Node for RtspCameraNode {
 
     async fn run(self, ctx: bubbaloop_node::NodeContext) -> anyhow::Result<()> {
         let camera_name = self.config.name.clone();
-        let publish_topic = self.config.publish_topic.clone();
+        let compressed_suffix = format!("{}/compressed", self.config.topic_key());
 
         let url = std::env::var("RTSP_URL").unwrap_or_else(|_| self.config.url.clone());
         let capture = Arc::new(H264StreamCapture::new(&url, self.config.latency)?);
@@ -91,9 +91,9 @@ impl bubbaloop_node::Node for RtspCameraNode {
         );
 
         let compressed_pub: ProtoPublisher<CompressedImage> =
-            ctx.publisher_proto(&publish_topic).await?;
+            ctx.publisher_proto(&compressed_suffix).await?;
 
-        log::info!("[{}] Publishing to: {}", camera_name, ctx.topic(&publish_topic));
+        log::info!("[{}] Publishing to: {}", camera_name, ctx.topic(&compressed_suffix));
 
         // Keyframes are always published to avoid breaking the H264 decode chain.
         let frame_interval = self.config.frame_rate.map(|fps| {
