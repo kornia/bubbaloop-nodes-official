@@ -1,4 +1,4 @@
-name: tapo_entrance_detector
+name: tapo_terrace_detector
 subscribe_topic: camera/tapo_terrace/compressed
 publish_topic: camera/tapo_terrace/detections
 confidence_threshold: 0.7
