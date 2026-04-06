@@ -41,27 +41,19 @@ impl H264Frame {
     }
 }
 
-/// Raw RGBA frame decoded on the GPU via nvv4l2decoder + nvvidconv.
-/// Data is owned (copied out of GStreamer buffer) so it can be moved
-/// across threads and written into a Zenoh SHM buffer.
+/// Raw RGBA frame, already resized to the target inference dimensions by the
+/// GStreamer pipeline (nvvidconv hardware scaler on Jetson VIC).
+/// Data length is always `raw_width * raw_height * 4` bytes.
 pub struct RgbaFrame {
-    pub width: u32,
-    pub height: u32,
     pub pts: u64,
     pub sequence: u32,
-    /// Row-major RGBA bytes, length == width * height * 4
+    /// Row-major RGBA bytes, length == raw_width * raw_height * 4
     pub data: Vec<u8>,
 }
 
-impl RgbaFrame {
-    pub fn step(&self) -> u32 {
-        self.width * 4
-    }
-}
-
-/// Captures H264 from RTSP with a GStreamer tee:
-///   branch 1 → H264 byte-stream  (Annex-B, fast, compressed)
-///   branch 2 → RGBA raw frames   (decoded on GPU via nvv4l2decoder)
+/// Captures H264 from RTSP with a two-branch GStreamer tee:
+///   branch 1 → H264 byte-stream (Annex-B, fast, compressed)
+///   branch 2 → RGBA, resized to `raw_width × raw_height` by nvvidconv (Jetson VIC)
 pub struct H264StreamCapture {
     pipeline: gstreamer::Pipeline,
     h264_rx: flume::Receiver<H264Frame>,
@@ -69,14 +61,21 @@ pub struct H264StreamCapture {
 }
 
 impl H264StreamCapture {
-    pub fn new(url: &str, latency: u32) -> Result<Self, H264CaptureError> {
+    pub fn new(
+        url: &str,
+        latency: u32,
+        raw_width: u32,
+        raw_height: u32,
+    ) -> Result<Self, H264CaptureError> {
         if !gstreamer::INITIALIZED.load(std::sync::atomic::Ordering::Relaxed) {
             gstreamer::init()?;
         }
 
         // Two-branch tee:
-        //   h264sink — raw Annex-B stream for publishing over Zenoh
-        //   rgbasink — GPU-decoded RGBA for publishing over Zenoh SHM
+        //   h264sink — raw Annex-B for Zenoh compressed topic
+        //   rgbasink — nvv4l2decoder + nvvidconv resize to raw_width×raw_height
+        //              nvvidconv is the Jetson VIC: handles both color conversion and
+        //              scaling in hardware, zero extra GPU kernels needed.
         let pipeline_desc = format!(
             "rtspsrc location={url} latency={latency} ! \
              rtph264depay ! h264parse config-interval=-1 ! \
@@ -85,7 +84,8 @@ impl H264StreamCapture {
              t. ! queue max-size-buffers=2 leaky=downstream ! \
                appsink name=h264sink emit-signals=true sync=false max-buffers=30 drop=true \
              t. ! queue max-size-buffers=2 leaky=downstream ! \
-               nvv4l2decoder ! nvvidconv ! video/x-raw,format=RGBA ! \
+               nvv4l2decoder ! nvvidconv ! \
+               video/x-raw,format=RGBA,width={raw_width},height={raw_height} ! \
                appsink name=rgbasink emit-signals=true sync=false max-buffers=2 drop=true"
         );
 
@@ -132,7 +132,6 @@ impl H264StreamCapture {
                     move |sink| {
                         if let Ok(frame) = Self::pull_rgba(sink, sequence) {
                             sequence = sequence.wrapping_add(1);
-                            // Non-blocking: drop frame if consumer is slow
                             let _ = rgba_tx.try_send(frame);
                         }
                         Ok(gstreamer::FlowSuccess::Ok)
@@ -183,18 +182,8 @@ impl H264StreamCapture {
         let sample = sink
             .pull_sample()
             .map_err(|_| H264CaptureError::BufferError)?;
-
-        // Extract width/height from caps
-        let caps = sample.caps().ok_or(H264CaptureError::BufferError)?;
-        let s = caps.structure(0).ok_or(H264CaptureError::BufferError)?;
-        let width: u32 = s
-            .get::<i32>("width")
-            .map_err(|_| H264CaptureError::BufferError)? as u32;
-        let height: u32 = s
-            .get::<i32>("height")
-            .map_err(|_| H264CaptureError::BufferError)? as u32;
-
         let buffer = sample.buffer_owned().ok_or(H264CaptureError::BufferError)?;
+
         let pts = buffer
             .pts()
             .or_else(|| buffer.dts())
@@ -205,12 +194,11 @@ impl H264StreamCapture {
             .into_mapped_buffer_readable()
             .map_err(|_| H264CaptureError::BufferError)?;
 
-        // Copy out of GStreamer buffer — needed to pass across threads and into SHM
+        // Copy into owned Vec so it can be moved to the Zenoh SHM writer.
+        // Width/height are known from the pipeline caps (fixed at construction).
         let data = mapped.as_slice().to_vec();
 
         Ok(RgbaFrame {
-            width,
-            height,
             pts,
             sequence,
             data,
