@@ -271,19 +271,15 @@ class RfDetrDetectorNode:
                 h264_bytes = base64.b64decode(h264_bytes)
             self._decoder.push(h264_bytes)
 
-        # Inference thread: fires at target_fps, grabs the latest decoded frame.
+        # Inference thread: publishes at exactly target_fps.
+        # Sleeps the remainder of the interval AFTER inference so slow frames
+        # (e.g. CUDA warm-up) don't cause catch-up bursts.
         def _inference_loop() -> None:
             interval = 1.0 / self._target_fps
-            next_run = time.monotonic() + interval
             while not ctx._shutdown.is_set():
-                now = time.monotonic()
-                sleep_for = next_run - now
-                if sleep_for > 0:
-                    time.sleep(sleep_for)
-                next_run += interval
-
                 frame = self._decoder.pull()
                 if frame is None:
+                    time.sleep(0.05)
                     continue
 
                 t0 = time.monotonic()
@@ -306,6 +302,10 @@ class RfDetrDetectorNode:
                     len(detections),
                     (t1 - t0) * 1000,
                 )
+
+                remaining = interval - (t1 - t0)
+                if remaining > 0:
+                    time.sleep(remaining)
 
         inference_thread = threading.Thread(target=_inference_loop, daemon=True, name="inference")
         inference_thread.start()
