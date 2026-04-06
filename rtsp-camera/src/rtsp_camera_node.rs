@@ -8,7 +8,7 @@ use bubbaloop_node::zenoh::shm::{
     BlockOn, GarbageCollect, PosixShmProviderBackend, ShmProviderBuilder,
 };
 use bubbaloop_node::zenoh::Wait;
-use bubbaloop_node::ShmPublisher;
+use bubbaloop_node::RawPublisher;
 use std::sync::Arc;
 
 /// Extract NAL unit types from an H264 byte-stream (Annex B format).
@@ -77,10 +77,7 @@ impl bubbaloop_node::Node for RtspCameraNode {
         include_bytes!(concat!(env!("OUT_DIR"), "/descriptor.bin"))
     }
 
-    /// SHM transport required — raw RGBA frames are published zero-copy.
-    fn shm() -> bool {
-        true
-    }
+
 
     async fn init(
         _ctx: &bubbaloop_node::NodeContext,
@@ -122,7 +119,7 @@ impl bubbaloop_node::Node for RtspCameraNode {
             ctx.publisher_proto(&compressed_suffix).await?;
 
         // Raw topic: raw ZBytes publisher — payload is Zenoh SHM buffer, no protobuf wrapper.
-        let raw_pub: ShmPublisher = ctx.publisher_shm(&raw_suffix).await?;
+        let raw_pub: RawPublisher = ctx.publisher_raw(&raw_suffix).await?;
 
         // SHM pool: 4 × frame_size gives enough room for BlockOn<GarbageCollect>
         // to reclaim buffers the subscriber has already consumed.

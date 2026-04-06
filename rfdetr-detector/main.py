@@ -140,7 +140,6 @@ class RfDetrDetectorNode:
     """
 
     name = "rf-detr-detector"
-    shm = True  # enable Zenoh SHM transport to match the camera node
 
     def __init__(self, ctx, config: dict) -> None:
         self._ctx = ctx
