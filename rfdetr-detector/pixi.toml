@@ -13,7 +13,7 @@ pip = "*"
 
 [pypi-dependencies]
 pytest = ">=7.0"
-eclipse-zenoh = { version = ">=1.0", extras = ["shared-memory"] }
+eclipse-zenoh = ">=1.0"
 pyyaml = ">=6.0"
 protobuf = ">=4.0,<6.0"
 torch = { version = "==2.8.0", index = "https://pypi.jetson-ai-lab.io/jp6/cu126" }
@@ -21,4 +21,4 @@ torchvision = { version = "==0.23.0", index = "https://pypi.jetson-ai-lab.io/jp6
 rfdetr = ">=1.6.3"
 huggingface-hub = ">=1.5.0,<2.0"
 numpy = ">=1.24,<2.0"
-bubbaloop-sdk = { git = "https://github.com/kornia/bubbaloop.git", branch = "main", subdirectory = "python-sdk" }
+bubbaloop-sdk = { git = "https://github.com/kornia/bubbaloop.git", branch = "fix/local-topic-raw-frames", subdirectory = "python-sdk" }
