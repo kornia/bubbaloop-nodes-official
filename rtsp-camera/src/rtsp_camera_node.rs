@@ -102,15 +102,17 @@ impl bubbaloop_node::Node for RtspCameraNode {
             self.config.latency,
             raw_width,
             raw_height,
+            self.config.hw_accel,
         )?);
         capture.start()?;
 
         log::info!(
-            "Camera '{}' capturing from RTSP (latency={}ms, raw={}x{})",
+            "Camera '{}' capturing from RTSP (latency={}ms, raw={}x{}, hw_accel={:?})",
             camera_name,
             self.config.latency,
             raw_width,
             raw_height,
+            self.config.hw_accel,
         );
 
         // Compressed topic: protobuf publisher (existing path, unchanged)

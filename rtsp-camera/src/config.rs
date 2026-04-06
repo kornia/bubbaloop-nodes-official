@@ -1,6 +1,19 @@
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 
+/// Hardware acceleration backend for decoding and RGBA conversion.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum HwAccel {
+    /// NVIDIA hardware decoder: `nvv4l2decoder ! nvvidconv` (Jetson VIC).
+    /// Best performance on Jetson — zero extra GPU kernels.
+    #[default]
+    Nvidia,
+    /// Software decoder: `avdec_h264 ! videoconvert ! videoscale`.
+    /// Works on any x86/ARM host without NVDEC support.
+    Cpu,
+}
+
 /// Configuration for a single RTSP camera instance
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Config {
@@ -16,12 +29,15 @@ pub struct Config {
     /// Target publish frame rate (frames per second, 1–120)
     #[serde(default)]
     pub frame_rate: Option<u32>,
-    /// Width to resize raw RGBA frames before publishing over SHM (default: 560)
+    /// Width of raw RGBA frames published over SHM (default: 560)
     #[serde(default = "default_raw_width")]
     pub raw_width: u32,
-    /// Height to resize raw RGBA frames before publishing over SHM (default: 560)
+    /// Height of raw RGBA frames published over SHM (default: 560)
     #[serde(default = "default_raw_height")]
     pub raw_height: u32,
+    /// Hardware acceleration backend for decoding and resize (default: nvidia)
+    #[serde(default)]
+    pub hw_accel: HwAccel,
 }
 
 fn default_latency() -> u32 {
@@ -102,6 +118,20 @@ impl Config {
             }
         }
 
+        if self.raw_width == 0 || self.raw_width > 4096 {
+            return Err(ConfigError::ValidationError(format!(
+                "raw_width {} out of range (1-4096)",
+                self.raw_width
+            )));
+        }
+
+        if self.raw_height == 0 || self.raw_height > 4096 {
+            return Err(ConfigError::ValidationError(format!(
+                "raw_height {} out of range (1-4096)",
+                self.raw_height
+            )));
+        }
+
         Ok(())
     }
 }
@@ -142,6 +172,9 @@ latency: 200
             url: "rtsp://x".to_string(),
             latency: 50,
             frame_rate: None,
+            raw_width: 560,
+            raw_height: 560,
+            hw_accel: HwAccel::Nvidia,
         };
         assert_eq!(config.topic_key(), "tapo_terrace");
     }
@@ -153,6 +186,9 @@ latency: 200
             url: "rtsp://x".to_string(),
             latency: 50,
             frame_rate: None,
+            raw_width: 560,
+            raw_height: 560,
+            hw_accel: HwAccel::Cpu,
         };
         assert_eq!(config.topic_key(), "my_node");
     }
@@ -207,6 +243,66 @@ url: "rtsp://192.168.1.10:554/stream"
         let config = Config::parse(yaml)?;
         assert_eq!(config.latency, 200);
         Ok(())
+    }
+
+    #[test]
+    fn test_hw_accel_default_is_nvidia() -> Result<(), ConfigError> {
+        let yaml = r#"
+name: test_camera
+url: "rtsp://192.168.1.10:554/stream"
+"#;
+        let config = Config::parse(yaml)?;
+        assert_eq!(config.hw_accel, HwAccel::Nvidia);
+        Ok(())
+    }
+
+    #[test]
+    fn test_hw_accel_cpu() -> Result<(), ConfigError> {
+        let yaml = r#"
+name: test_camera
+url: "rtsp://192.168.1.10:554/stream"
+hw_accel: cpu
+"#;
+        let config = Config::parse(yaml)?;
+        assert_eq!(config.hw_accel, HwAccel::Cpu);
+        Ok(())
+    }
+
+    #[test]
+    fn test_hw_accel_nvidia_explicit() -> Result<(), ConfigError> {
+        let yaml = r#"
+name: test_camera
+url: "rtsp://192.168.1.10:554/stream"
+hw_accel: nvidia
+"#;
+        let config = Config::parse(yaml)?;
+        assert_eq!(config.hw_accel, HwAccel::Nvidia);
+        Ok(())
+    }
+
+    #[test]
+    fn test_raw_dimensions_custom() -> Result<(), ConfigError> {
+        let yaml = r#"
+name: test_camera
+url: "rtsp://192.168.1.10:554/stream"
+raw_width: 640
+raw_height: 480
+"#;
+        let config = Config::parse(yaml)?;
+        assert_eq!(config.raw_width, 640);
+        assert_eq!(config.raw_height, 480);
+        Ok(())
+    }
+
+    #[test]
+    fn test_raw_dimensions_zero_invalid() {
+        let yaml = r#"
+name: test_camera
+url: "rtsp://x"
+raw_width: 0
+raw_height: 480
+"#;
+        assert!(Config::parse(yaml).is_err());
     }
 
     #[test]

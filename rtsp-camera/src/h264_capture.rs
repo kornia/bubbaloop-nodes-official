@@ -1,3 +1,4 @@
+use crate::config::HwAccel;
 use gstreamer::prelude::*;
 use thiserror::Error;
 
@@ -66,16 +67,29 @@ impl H264StreamCapture {
         latency: u32,
         raw_width: u32,
         raw_height: u32,
+        hw_accel: HwAccel,
     ) -> Result<Self, H264CaptureError> {
         if !gstreamer::INITIALIZED.load(std::sync::atomic::Ordering::Relaxed) {
             gstreamer::init()?;
         }
 
+        // RGBA decode branch differs by hw_accel:
+        //   nvidia — nvv4l2decoder ! nvvidconv (Jetson VIC, hardware decode + scale)
+        //   cpu    — avdec_h264 ! videoconvert ! videoscale (software, portable)
+        let rgba_branch = match hw_accel {
+            HwAccel::Nvidia => format!(
+                "nvv4l2decoder ! nvvidconv ! \
+                 video/x-raw,format=RGBA,width={raw_width},height={raw_height}"
+            ),
+            HwAccel::Cpu => format!(
+                "avdec_h264 ! videoconvert ! videoscale ! \
+                 video/x-raw,format=RGBA,width={raw_width},height={raw_height}"
+            ),
+        };
+
         // Two-branch tee:
-        //   h264sink — raw Annex-B for Zenoh compressed topic
-        //   rgbasink — nvv4l2decoder + nvvidconv resize to raw_width×raw_height
-        //              nvvidconv is the Jetson VIC: handles both color conversion and
-        //              scaling in hardware, zero extra GPU kernels needed.
+        //   h264sink — raw Annex-B bytes for Zenoh compressed topic
+        //   rgbasink — decoded + resized RGBA for SHM raw topic
         let pipeline_desc = format!(
             "rtspsrc location={url} latency={latency} ! \
              rtph264depay ! h264parse config-interval=-1 ! \
@@ -84,8 +98,7 @@ impl H264StreamCapture {
              t. ! queue max-size-buffers=2 leaky=downstream ! \
                appsink name=h264sink emit-signals=true sync=false max-buffers=30 drop=true \
              t. ! queue max-size-buffers=2 leaky=downstream ! \
-               nvv4l2decoder ! nvvidconv ! \
-               video/x-raw,format=RGBA,width={raw_width},height={raw_height} ! \
+               {rgba_branch} ! \
                appsink name=rgbasink emit-signals=true sync=false max-buffers=2 drop=true"
         );
 
