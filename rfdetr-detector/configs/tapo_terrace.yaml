@@ -1,6 +1,4 @@
 name: tapo_terrace_detector
-subscribe_topic: camera/tapo_terrace/compressed
-publish_topic: camera/tapo_terrace/detections
 confidence_threshold: 0.7
 model: large
 target_fps: 1.0

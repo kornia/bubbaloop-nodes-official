@@ -1,18 +1,18 @@
 #!/usr/bin/env python3
-"""rf-detr-detector — Object detection on H264 camera streams using RF-DETR."""
+"""rf-detr-detector — Object detection on camera raw frames via Zenoh SHM.
+
+Subscribes to `{key}/raw` (RawImage protobuf, RGBA, published over Zenoh SHM
+by the rtsp-camera node) and publishes JSON detections to `{key}/detections`.
+
+Topic key is derived from the instance name: `tapo_terrace_detector` → `tapo_terrace`.
+Schema is fetched live from the camera node's schema queryable.
+"""
 
 import base64
 import logging
-import re
 import threading
 import time
 from datetime import datetime, timezone
-
-import gi
-
-gi.require_version("Gst", "1.0")
-gi.require_version("GstApp", "1.0")
-from gi.repository import GLib, Gst
 
 import numpy as np
 import torch
@@ -20,8 +20,6 @@ import yaml
 from rfdetr import RFDETRBase, RFDETRLarge, RFDETRMedium, RFDETRSmall, RFDETRNano
 
 log = logging.getLogger("rf-detr-detector")
-
-TOPIC_RE = re.compile(r"^[a-zA-Z0-9/_\-\.]+$")
 
 # COCO class names (80 classes, index = class_id)
 COCO_CLASSES = [
@@ -42,19 +40,12 @@ COCO_CLASSES = [
 
 
 def load_config(path: str) -> dict:
-    """Load and validate config YAML. Raises ValueError on invalid fields."""
+    """Load and validate config YAML."""
     with open(path) as f:
         cfg = yaml.safe_load(f) or {}
 
-    for required in ("name", "subscribe_topic", "publish_topic"):
-        if not cfg.get(required):
-            raise ValueError(f"Missing required config field: {required}")
-
-    for field in ("subscribe_topic", "publish_topic"):
-        if not TOPIC_RE.match(cfg[field]):
-            raise ValueError(
-                f"Invalid {field}: {cfg[field]!r} — must match [a-zA-Z0-9/_\\-.]+"
-            )
+    if not cfg.get("name"):
+        raise ValueError("Missing required config field: name")
 
     threshold = float(cfg.get("confidence_threshold", 0.5))
     if not (0.0 <= threshold <= 1.0):
@@ -82,7 +73,6 @@ def build_payload(
     sequence: int,
     detections: list[dict],
 ) -> dict:
-    """Build the JSON detection payload published to Zenoh."""
     return {
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "frame_id": frame_id,
@@ -91,86 +81,6 @@ def build_payload(
         "sequence": sequence,
         "detections": detections,
     }
-
-
-class H264DecoderCUDA:
-    """GStreamer H264 decoder using Jetson NVDEC hardware — outputs CHW float CUDA tensor.
-
-    Pipeline: nvv4l2decoder (Jetson hardware H264 decode) → nvvidconv (VIC color
-    conversion NV12→RGBA) → CPU-side appsink → torch CHW float32 CUDA tensor.
-
-    nvvidconv does not support RGB output so we use RGBA and drop the alpha channel.
-    The VIC handles color conversion; a single non-blocking H2D copy moves the result
-    to CUDA. Decoded frames are stored in a single overwriting slot so pull() always
-    returns the most recent frame.
-    """
-
-    _PIPELINE = (
-        "appsrc name=src format=3 block=false max-bytes=2000000 "
-        "caps=video/x-h264,stream-format=byte-stream,alignment=au "
-        "! h264parse "
-        "! nvv4l2decoder "
-        "! nvvidconv "
-        "! video/x-raw,format=RGBA "
-        "! appsink name=sink emit-signals=true sync=false max-buffers=2 drop=true"
-    )
-
-    def __init__(self) -> None:
-        Gst.init(None)
-        self._pipeline = Gst.parse_launch(self._PIPELINE)
-        self._appsrc = self._pipeline.get_by_name("src")
-        self._appsink = self._pipeline.get_by_name("sink")
-        self._latest_frame: "torch.Tensor | None" = None
-        self._frame_lock = threading.Lock()
-        self._appsink.connect("new-sample", self._on_new_sample)
-        self._pipeline.set_state(Gst.State.PLAYING)
-        self._loop = GLib.MainLoop()
-        self._thread = threading.Thread(target=self._loop.run, daemon=True)
-        self._thread.start()
-
-    def push(self, h264_bytes: bytes) -> None:
-        buf = Gst.Buffer.new_wrapped(h264_bytes)
-        self._appsrc.emit("push-buffer", buf)
-
-    def pull(self) -> "torch.Tensor | None":
-        """Return and consume the latest (C, H, W) float32 CUDA tensor [0,1], or None."""
-        with self._frame_lock:
-            frame = self._latest_frame
-            self._latest_frame = None
-            return frame
-
-    def close(self) -> None:
-        self._appsrc.emit("end-of-stream")
-        self._pipeline.set_state(Gst.State.NULL)
-        self._loop.quit()
-
-    def _on_new_sample(self, sink) -> Gst.FlowReturn:
-        sample = sink.emit("pull-sample")
-        if sample is None:
-            return Gst.FlowReturn.ERROR
-        buf = sample.get_buffer()
-        caps = sample.get_caps()
-        struct = caps.get_structure(0)
-        width = struct.get_value("width")
-        height = struct.get_value("height")
-        ok, mapinfo = buf.map(Gst.MapFlags.READ)
-        if ok:
-            frame_cpu = (
-                np.frombuffer(mapinfo.data, dtype=np.uint8)
-                .reshape(height, width, 4)
-                .copy()
-            )
-            buf.unmap(mapinfo)
-            # RGBA HWC uint8 → RGB CHW float32 [0,1] on CUDA (drop alpha, non-blocking H2D)
-            tensor = (
-                torch.from_numpy(frame_cpu[:, :, :3])
-                .permute(2, 0, 1)
-                .to(dtype=torch.float32, device="cuda", non_blocking=True)
-                .div_(255.0)
-            )
-            with self._frame_lock:
-                self._latest_frame = tensor
-        return Gst.FlowReturn.OK
 
 
 class Detector:
@@ -221,59 +131,78 @@ class Detector:
 
 
 class RfDetrDetectorNode:
-    """Bubbaloop node: subscribe to H264 camera frames, detect, publish JSON."""
+    """Bubbaloop node: subscribe to raw RGBA camera frames over SHM, detect, publish JSON.
+
+    Topic derivation from instance name:
+      tapo_terrace_detector → topic key: tapo_terrace
+        subscribe:  tapo_terrace/raw          (RawImage proto, RGBA, SHM)
+        publish:    tapo_terrace/detections   (JSON)
+        schema:     tapo_terrace_camera/schema
+    """
 
     name = "rf-detr-detector"
+    shm = True  # enable Zenoh SHM transport to match the camera node
 
     def __init__(self, ctx, config: dict) -> None:
         self._ctx = ctx
-        self._subscribe_topic = config["subscribe_topic"]
         self._target_fps = config["target_fps"]
 
-        self._pub = ctx.publisher_json(config["publish_topic"])
-        self._decoder = H264DecoderCUDA()
+        # Derive topic key: strip "_detector" suffix from instance name
+        instance_name = config["name"]
+        topic_key = instance_name.removesuffix("_detector")
+        camera_instance = topic_key + "_camera"
+
+        self._raw_topic = ctx.topic(f"{topic_key}/raw")
+        self._schema_key = ctx.topic(f"{camera_instance}/schema")
+
+        self._pub = ctx.publisher_json(f"{topic_key}/detections")
         self._detector = Detector(
             confidence_threshold=config["confidence_threshold"],
             model=config["model"],
         )
 
         from bubbaloop_sdk import ProtoDecoder
-
         self._proto = ProtoDecoder(ctx.session)
+
+        # Latest decoded frame slot — written by subscriber callback, read by inference loop
+        self._latest_frame: "torch.Tensor | None" = None
+        self._frame_lock = threading.Lock()
         self._seq = 0
 
-        # Camera node publishes at "camera/{name}/compressed" but its schema
-        # lives at "{name}/schema" (instance_name level, not data path level).
-        parts = self._subscribe_topic.split("/")
-        source_instance = parts[1] if len(parts) >= 2 else parts[0]
-        self._schema_key = ctx.topic(f"{source_instance}/schema")
-
         log.info(
-            "Subscribing to %s, publishing to %s at %.1f fps (schema: %s)",
-            ctx.topic(self._subscribe_topic),
-            ctx.topic(config["publish_topic"]),
-            self._target_fps,
+            "Subscribing to %s (schema: %s), publishing to %s at %.1f fps",
+            self._raw_topic,
             self._schema_key,
+            ctx.topic(f"{topic_key}/detections"),
+            self._target_fps,
         )
 
     def run(self) -> None:
         ctx = self._ctx
 
-        # Subscriber: decode H264 and keep the latest frame ready — no inference here.
-        def _on_frame(sample) -> None:
+        def _on_raw_frame(sample) -> None:
             data = self._proto.decode(sample, schema_key=self._schema_key)
             if data is None:
                 return
-            h264_bytes = data.get("data")
-            if not h264_bytes:
+            raw_bytes = data.get("data")
+            width = data.get("width")
+            height = data.get("height")
+            if not raw_bytes or not width or not height:
                 return
-            if isinstance(h264_bytes, str):
-                h264_bytes = base64.b64decode(h264_bytes)
-            self._decoder.push(h264_bytes)
+            if isinstance(raw_bytes, str):
+                raw_bytes = base64.b64decode(raw_bytes)
 
-        # Inference thread: publishes at exactly target_fps.
-        # Sleeps the remainder of the interval AFTER inference so slow frames
-        # (e.g. CUDA warm-up) don't cause catch-up bursts.
+            # RGBA HWC uint8 → RGB CHW float32 [0,1] on CUDA (drop alpha, non-blocking H2D)
+            frame_cpu = np.frombuffer(raw_bytes, dtype=np.uint8).reshape(height, width, 4)
+            tensor = (
+                torch.from_numpy(frame_cpu[:, :, :3].copy())
+                .permute(2, 0, 1)
+                .to(dtype=torch.float32, device="cuda", non_blocking=True)
+                .div_(255.0)
+            )
+            with self._frame_lock:
+                self._latest_frame = tensor
+
         def _inference_loop() -> None:
             interval = 1.0 / self._target_fps
             next_run = time.monotonic()
@@ -283,7 +212,10 @@ class RfDetrDetectorNode:
                     time.sleep(min(0.05, next_run - now))
                     continue
 
-                frame = self._decoder.pull()
+                with self._frame_lock:
+                    frame = self._latest_frame
+                    self._latest_frame = None
+
                 if frame is None:
                     time.sleep(0.05)
                     continue
@@ -310,15 +242,13 @@ class RfDetrDetectorNode:
                     (t1 - t0) * 1000,
                 )
 
-
         inference_thread = threading.Thread(target=_inference_loop, daemon=True, name="inference")
         inference_thread.start()
 
-        sub = ctx.session.declare_subscriber(ctx.topic(self._subscribe_topic), _on_frame)
+        sub = ctx.session.declare_subscriber(self._raw_topic, _on_raw_frame)
         ctx._shutdown.wait()
         sub.undeclare()
         inference_thread.join(timeout=2.0)
-        self._decoder.close()
         log.info("rf-detr-detector shutdown complete (processed %d frames)", self._seq)
 
 
