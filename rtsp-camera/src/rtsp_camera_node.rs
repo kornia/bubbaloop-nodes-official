@@ -118,8 +118,9 @@ impl bubbaloop_node::Node for RtspCameraNode {
         let compressed_pub: ProtoPublisher<CompressedImage> =
             ctx.publisher_proto(&compressed_suffix).await?;
 
-        // Raw topic: raw ZBytes publisher — payload is Zenoh SHM buffer, no protobuf wrapper.
-        let raw_pub: RawPublisher = ctx.publisher_raw(&raw_suffix).await?;
+        // Raw topic: machine-local key (local/{machine_id}/...) — never crosses the WebSocket bridge.
+        // SHM zero-copy is used automatically when both sides have it enabled.
+        let raw_pub: RawPublisher = ctx.publisher_raw_local(&raw_suffix).await?;
 
         // SHM pool: 4 × frame_size gives enough room for BlockOn<GarbageCollect>
         // to reclaim buffers the subscriber has already consumed.
@@ -138,7 +139,7 @@ impl bubbaloop_node::Node for RtspCameraNode {
             ctx.topic(&compressed_suffix),
             raw_width,
             raw_height,
-            ctx.topic(&raw_suffix),
+            ctx.local_topic(&raw_suffix),
         );
 
         let frame_interval = self.config.frame_rate.map(|fps| {
