@@ -1,5 +1,5 @@
 [workspace]
-name = "rf-detr-detector"
+name = "camera-detector"
 channels = ["conda-forge"]
 platforms = ["linux-aarch64"]
 

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""yolo-detector — Object detection on camera raw frames via Zenoh SHM.
+"""camera-detector — Object detection on camera raw frames via Zenoh SHM.
 
 Subscribes to `{key}/raw` (RawImage protobuf, encoding="rgba8", over Zenoh SHM
 published by the rtsp-camera node) and publishes JSON detections to
@@ -18,7 +18,7 @@ import torch
 import yaml
 from ultralytics import YOLO
 
-log = logging.getLogger("yolo-detector")
+log = logging.getLogger("camera-detector")
 
 
 def load_config(path: str) -> dict:
@@ -124,7 +124,7 @@ class Detector:
         return detections
 
 
-class YoloDetectorNode:
+class CameraObjectDetector:
     """Bubbaloop node: subscribe to raw RGBA camera frames over SHM, detect, publish JSON.
 
     Topic derivation from instance name:
@@ -133,7 +133,7 @@ class YoloDetectorNode:
         publish:    tapo_terrace/detections   (JSON)
     """
 
-    name = "yolo-detector"
+    name = "camera-detector"
 
     def __init__(self, ctx, config: dict) -> None:
         self._ctx = ctx
@@ -250,10 +250,10 @@ class YoloDetectorNode:
         ctx._shutdown.wait()
         sub.undeclare()
         inference_thread.join(timeout=2.0)
-        log.info("yolo-detector shutdown complete (processed %d frames)", self._seq)
+        log.info("camera-detector shutdown complete (processed %d frames)", self._seq)
 
 
 if __name__ == "__main__":
     from bubbaloop_sdk import run_node
 
-    run_node(YoloDetectorNode)
+    run_node(CameraObjectDetector)
