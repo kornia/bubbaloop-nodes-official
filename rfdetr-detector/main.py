@@ -13,6 +13,7 @@ import threading
 import time
 from datetime import datetime, timezone
 
+import numpy as np
 import torch
 import yaml
 from rfdetr import RFDETRBase, RFDETRLarge, RFDETRMedium, RFDETRSmall, RFDETRNano
@@ -172,21 +173,38 @@ class RfDetrDetectorNode:
         sub = ctx.subscribe(f"{self._topic_key}/raw", local=True)
 
         def _receive_loop() -> None:
+            # Buffers are allocated on the first frame using dimensions from the
+            # RawImage proto (msg.width, msg.height).  After that, every frame
+            # reuses the same pinned-CPU and CUDA memory — zero per-frame allocs.
+            # On Jetson unified memory, uncontrolled CUDA allocs eat system RAM
+            # and cause OOM reboots.
+            rgb_pinned = None
+            rgb_np = None
+            cuda_buf = None
+
             for msg in sub:
-                # torch.frombuffer shares memory with msg.data (no extra CPU copy).
-                # Full RGBA goes to GPU in one H2D DMA; alpha drop + normalize on GPU.
-                tensor = (
-                    torch.frombuffer(msg.data, dtype=torch.uint8)
-                    .reshape(msg.height, msg.width, 4)
-                    .to(device="cuda")
-                    [:, :, :3]
-                    .permute(2, 0, 1)
-                    .to(dtype=torch.float32)
-                    .div_(255.0)
-                )
-                del msg
+                w, h = msg.width, msg.height
+
+                # First frame (or resolution change): allocate once.
+                if rgb_pinned is None or rgb_pinned.shape[0] != h or rgb_pinned.shape[1] != w:
+                    rgb_pinned = torch.empty((h, w, 3), dtype=torch.uint8).pin_memory()
+                    rgb_np = rgb_pinned.numpy()
+                    cuda_buf = torch.empty((3, h, w), dtype=torch.float32, device="cuda")
+                    log.info("Allocated frame buffers: %dx%d (pinned CPU + CUDA f32)", w, h)
+
+                rgba = np.frombuffer(msg.data, dtype=np.uint8).reshape(h, w, 4)
+                np.copyto(rgb_np, rgba[:, :, :3])
+                del rgba, msg
+
+                # Pinned → CUDA with dtype promotion (uint8→float32 in copy_).
+                # permute() is a view (no alloc), contiguous() is a small CPU temp
+                # freed immediately. copy_() reuses cuda_buf — no CUDA malloc.
+                chw_u8 = rgb_pinned.permute(2, 0, 1).contiguous()
+                cuda_buf.copy_(chw_u8).div_(255.0)
+                del chw_u8
+
                 with self._frame_lock:
-                    self._latest_frame = tensor
+                    self._latest_frame = cuda_buf
 
         def _inference_loop() -> None:
             interval = 1.0 / self._target_fps
@@ -205,9 +223,14 @@ class RfDetrDetectorNode:
                     time.sleep(0.05)
                     continue
 
+                # Clone so inference doesn't race with receive overwriting cuda_buf.
+                # One clone per inference tick (1fps) — negligible.
+                frame = frame.clone()
+
                 next_run = time.monotonic() + interval
                 t0 = time.monotonic()
                 detections = self._detector.detect(frame)
+                del frame
                 t1 = time.monotonic()
 
                 payload = build_payload(

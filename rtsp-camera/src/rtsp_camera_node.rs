@@ -5,7 +5,7 @@ use bubbaloop_node::publisher::ProtoPublisher;
 use bubbaloop_node::schemas::Header;
 use bubbaloop_node::zenoh::bytes::ZBytes;
 use bubbaloop_node::zenoh::shm::{
-    BlockOn, GarbageCollect, PosixShmProviderBackend, ShmProviderBuilder,
+    BlockOn, GarbageCollect, OwnedShmBuf, PosixShmProviderBackend, ShmProviderBuilder,
 };
 use bubbaloop_node::zenoh::Wait;
 use bubbaloop_node::RawPublisher;
@@ -119,8 +119,9 @@ impl bubbaloop_node::Node for RtspCameraNode {
         let compressed_pub: ProtoPublisher<CompressedImage> =
             ctx.publisher_proto(&compressed_suffix).await?;
 
-        // local=true: local/{machine_id}/... topic + CongestionControl::Block for SHM
-        let raw_pub: RawPublisher = ctx.publisher_raw(&raw_suffix, true).await?;
+        // SHM + protobuf encoding: subscribers auto-decode RawImage by encoding header.
+        // Local topic + CongestionControl::Block for SHM backpressure.
+        let raw_pub: RawPublisher = ctx.publisher_raw_proto::<RawImage>(&raw_suffix).await?;
 
         // SHM pool: each slot holds a serialized RawImage proto.
         // Proto overhead over raw pixels is ~128 bytes (header + field tags/lengths).
@@ -249,6 +250,9 @@ impl bubbaloop_node::Node for RtspCameraNode {
                                 Ok(mut sbuf) => {
                                     msg.encode(&mut &mut sbuf[..encoded_len])
                                         .expect("SHM slot large enough");
+                                    // Truncate SHM buffer to actual proto size — trailing
+                                    // zeros from the oversized slot break protobuf parsing.
+                                    sbuf.try_resize(std::num::NonZeroUsize::new(encoded_len).unwrap());
                                     if raw_pub.put(ZBytes::from(sbuf)).await.is_ok() {
                                         raw_published += 1;
                                     }
