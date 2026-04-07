@@ -169,7 +169,7 @@ class RfDetrDetectorNode:
 
     def run(self) -> None:
         ctx = self._ctx
-        sub = ctx.subscriber_auto(f"{self._topic_key}/raw", local=True)
+        sub = ctx.subscriber_proto(f"{self._topic_key}/raw", local=True)
 
         def _receive_loop() -> None:
             for msg in sub:
