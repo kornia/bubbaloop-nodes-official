@@ -56,7 +56,7 @@ def test_load_config_defaults(tmp_path):
     cfg_file.write_text("name: test_node\n")
     cfg = load_config(str(cfg_file))
     assert cfg["confidence_threshold"] == 0.5
-    assert cfg["model"] == "base"
+    assert cfg["model"] == "nano"
     assert cfg["target_fps"] == 1.0
 
 

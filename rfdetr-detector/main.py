@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""rf-detr-detector — Object detection on camera raw frames via Zenoh SHM.
+"""yolo-detector — Object detection on camera raw frames via Zenoh SHM.
 
 Subscribes to `{key}/raw` (RawImage protobuf, encoding="rgba8", over Zenoh SHM
 published by the rtsp-camera node) and publishes JSON detections to
@@ -16,26 +16,9 @@ from datetime import datetime, timezone
 import numpy as np
 import torch
 import yaml
-from rfdetr import RFDETRBase, RFDETRLarge, RFDETRMedium, RFDETRSmall, RFDETRNano
+from ultralytics import YOLO
 
-log = logging.getLogger("rf-detr-detector")
-
-# COCO class names (80 classes, index = class_id)
-COCO_CLASSES = [
-    "person", "bicycle", "car", "motorcycle", "airplane", "bus", "train",
-    "truck", "boat", "traffic light", "fire hydrant", "stop sign",
-    "parking meter", "bench", "bird", "cat", "dog", "horse", "sheep",
-    "cow", "elephant", "bear", "zebra", "giraffe", "backpack", "umbrella",
-    "handbag", "tie", "suitcase", "frisbee", "skis", "snowboard",
-    "sports ball", "kite", "baseball bat", "baseball glove", "skateboard",
-    "surfboard", "tennis racket", "bottle", "wine glass", "cup", "fork",
-    "knife", "spoon", "bowl", "banana", "apple", "sandwich", "orange",
-    "broccoli", "carrot", "hot dog", "pizza", "donut", "cake", "chair",
-    "couch", "potted plant", "bed", "dining table", "toilet", "tv",
-    "laptop", "mouse", "remote", "keyboard", "cell phone", "microwave",
-    "oven", "toaster", "sink", "refrigerator", "book", "clock", "vase",
-    "scissors", "teddy bear", "hair drier", "toothbrush",
-]
+log = logging.getLogger("yolo-detector")
 
 
 def load_config(path: str) -> dict:
@@ -51,8 +34,8 @@ def load_config(path: str) -> dict:
         raise ValueError(f"confidence_threshold {threshold} out of range (0.0–1.0)")
     cfg["confidence_threshold"] = threshold
 
-    valid_models = ("nano", "small", "base", "medium", "large")
-    model = cfg.get("model", "base")
+    valid_models = ("nano", "small", "medium", "large", "xlarge")
+    model = cfg.get("model", "nano")
     if model not in valid_models:
         raise ValueError(f"model {model!r} must be one of {valid_models}")
     cfg["model"] = model
@@ -83,41 +66,53 @@ def build_payload(
 
 
 class Detector:
-    """RF-DETR inference wrapper. Accepts a CHW float32 CUDA tensor in [0,1]."""
+    """YOLO11 inference wrapper. Accepts a CHW float32 CUDA tensor in [0,1]."""
 
-    _MODEL_CLASSES = {
-        "nano": RFDETRNano,
-        "small": RFDETRSmall,
-        "base": RFDETRBase,
-        "medium": RFDETRMedium,
-        "large": RFDETRLarge,
+    _MODEL_FILES = {
+        "nano": "yolo11n.pt",
+        "small": "yolo11s.pt",
+        "medium": "yolo11m.pt",
+        "large": "yolo11l.pt",
+        "xlarge": "yolo11x.pt",
     }
 
-    def __init__(self, confidence_threshold: float = 0.5, model: str = "base") -> None:
-        model_cls = self._MODEL_CLASSES[model]
-        log.info("Loading RF-DETR model (size=%s, device=cuda)...", model)
-        self._model = model_cls(device="cuda")
-        self._model.optimize_for_inference()
+    def __init__(self, confidence_threshold: float = 0.5, model: str = "nano") -> None:
+        model_file = self._MODEL_FILES[model]
+        log.info("Loading YOLO11 model (size=%s, device=cuda)...", model)
+        self._model = YOLO(model_file)
         self._threshold = confidence_threshold
-        log.info("RF-DETR model loaded and optimized (size=%s).", model)
+        self._class_names = self._model.names  # {0: 'person', 1: 'bicycle', ...}
+        log.info("YOLO11 model loaded (size=%s, %d classes).", model, len(self._class_names))
 
     def detect(self, image: torch.Tensor) -> list[dict]:
         """Run inference on a CHW float32 CUDA tensor. Returns list of detections."""
         try:
-            result = self._model.predict(image, threshold=self._threshold)
+            # YOLO expects BCHW with dims divisible by stride (32).
+            # Resize if needed — bilinear on CUDA is ~1ms.
+            _, h, w = image.shape
+            if h % 32 != 0 or w % 32 != 0:
+                new_h = (h + 31) // 32 * 32
+                new_w = (w + 31) // 32 * 32
+                image = torch.nn.functional.interpolate(
+                    image.unsqueeze(0), size=(new_h, new_w), mode="bilinear", align_corners=False
+                )
+            else:
+                image = image.unsqueeze(0)
+            results = self._model(image, conf=self._threshold, verbose=False)
         except Exception as e:
-            log.error("RF-DETR inference error: %s", e)
+            log.error("YOLO11 inference error: %s", e)
             return []
 
+        result = results[0]
         detections = []
-        for box, class_id, score in zip(result.xyxy, result.class_id, result.confidence):
-            class_id = int(class_id)
-            class_name = COCO_CLASSES[class_id] if class_id < len(COCO_CLASSES) else str(class_id)
+        for box, conf, cls_id in zip(result.boxes.xyxy, result.boxes.conf, result.boxes.cls):
+            class_id = int(cls_id)
+            class_name = self._class_names.get(class_id, str(class_id))
             detections.append(
                 {
                     "class_id": class_id,
                     "class_name": class_name,
-                    "confidence": round(float(score), 4),
+                    "confidence": round(float(conf), 4),
                     "bbox": {
                         "x1": int(box[0]),
                         "y1": int(box[1]),
@@ -129,17 +124,16 @@ class Detector:
         return detections
 
 
-class RfDetrDetectorNode:
+class YoloDetectorNode:
     """Bubbaloop node: subscribe to raw RGBA camera frames over SHM, detect, publish JSON.
 
     Topic derivation from instance name:
       tapo_terrace_detector → topic key: tapo_terrace
         subscribe:  tapo_terrace/raw          (RawImage proto, RGBA, SHM)
         publish:    tapo_terrace/detections   (JSON)
-        schema:     tapo_terrace_camera/schema
     """
 
-    name = "rf-detr-detector"
+    name = "yolo-detector"
 
     def __init__(self, ctx, config: dict) -> None:
         self._ctx = ctx
@@ -256,10 +250,10 @@ class RfDetrDetectorNode:
         ctx._shutdown.wait()
         sub.undeclare()
         inference_thread.join(timeout=2.0)
-        log.info("rf-detr-detector shutdown complete (processed %d frames)", self._seq)
+        log.info("yolo-detector shutdown complete (processed %d frames)", self._seq)
 
 
 if __name__ == "__main__":
     from bubbaloop_sdk import run_node
 
-    run_node(RfDetrDetectorNode)
+    run_node(YoloDetectorNode)
