@@ -58,6 +58,27 @@ def test_load_config_defaults(tmp_path):
     assert cfg["confidence_threshold"] == 0.5
     assert cfg["model"] == "nano"
     assert cfg["target_fps"] == 1.0
+    assert cfg["device"] == "cuda"
+
+
+def test_load_config_invalid_device(tmp_path):
+    cfg_file = tmp_path / "config.yaml"
+    cfg_file.write_text(
+        "name: tapo_terrace\n"
+        "device: tpu\n"
+    )
+    with pytest.raises(ValueError, match="device"):
+        load_config(str(cfg_file))
+
+
+def test_load_config_cpu_device(tmp_path):
+    cfg_file = tmp_path / "config.yaml"
+    cfg_file.write_text(
+        "name: tapo_terrace\n"
+        "device: cpu\n"
+    )
+    cfg = load_config(str(cfg_file))
+    assert cfg["device"] == "cpu"
 
 
 # --- Payload builder ---

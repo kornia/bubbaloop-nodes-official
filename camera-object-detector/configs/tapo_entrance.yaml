@@ -1,4 +1,4 @@
 name: tapo_entrance_detector
 confidence_threshold: 0.5
-model: nano
+model: xlarge
 target_fps: 1.0
