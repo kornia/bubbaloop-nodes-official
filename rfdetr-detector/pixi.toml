@@ -4,8 +4,9 @@ channels = ["conda-forge"]
 platforms = ["linux-aarch64"]
 
 [tasks]
-main = { cmd = "python main.py", env = { PYTHONNOUSERSITE = "1" } }
-test = { cmd = "python -m pytest tests/ -v", env = { PYTHONNOUSERSITE = "1" } }
+proto = { cmd = "protoc --python_out=. --pyi_out=. -I protos protos/header.proto protos/camera.proto" }
+main = { cmd = "python main.py", depends-on = ["proto"], env = { PYTHONNOUSERSITE = "1" } }
+test = { cmd = "python -m pytest tests/ -v", depends-on = ["proto"], env = { PYTHONNOUSERSITE = "1" } }
 
 [dependencies]
 python = ">=3.10,<3.11"
