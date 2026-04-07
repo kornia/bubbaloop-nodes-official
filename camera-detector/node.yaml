@@ -1,4 +1,4 @@
-name: yolo-detector
+name: camera-detector
 version: 0.2.0
 type: python
 description: Object detection using YOLO11 on camera raw frames via Zenoh SHM
