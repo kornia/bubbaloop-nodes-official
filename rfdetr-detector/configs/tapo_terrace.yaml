@@ -1,4 +1,4 @@
 name: tapo_terrace_detector
-confidence_threshold: 0.7
-model: large
+confidence_threshold: 0.5
+model: nano
 target_fps: 1.0

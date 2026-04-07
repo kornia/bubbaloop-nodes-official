@@ -1,7 +1,7 @@
-name: rf-detr-detector
-version: 0.1.0
+name: yolo-detector
+version: 0.2.0
 type: python
-description: Object detection using RF-DETR on camera H264 streams
+description: Object detection using YOLO11 on camera raw frames via Zenoh SHM
 author: Bubbaloop Team
 
 command: pixi run main
@@ -10,18 +10,19 @@ capabilities:
   - processor
 
 subscribes:
-  - suffix: camera/{name}/compressed
-    description: H264 compressed frames from an rtsp-camera node
+  - suffix: "{name}/raw"
+    description: Raw RGBA frames from an rtsp-camera node (SHM, local)
     encoding: application/protobuf
 
 publishes:
-  - suffix: rf-detr-detector/{name}/detections
-    description: RF-DETR object detections with bounding boxes and confidence scores
+  - suffix: "{name}/detections"
+    description: YOLO11 object detections with bounding boxes and confidence scores
     encoding: application/json
-    rate_hz: 10.0
+    rate_hz: 1.0
 
 requires:
-  hardware: []
+  hardware:
+    - NVIDIA GPU with CUDA support (Jetson or desktop)
   software:
-    - GStreamer 1.20+ with gst-plugins-ugly (avdec_h264)
-    - Python 3.11+
+    - Python 3.10+
+    - PyTorch with CUDA
