@@ -1,4 +1,4 @@
-name: tapo_entrance
-subscribe_topic: camera/tapo_entrance/compressed
-publish_topic: rf-detr-detector/tapo_entrance/detections
+name: tapo_entrance_detector
 confidence_threshold: 0.5
+model: base
+target_fps: 1.0

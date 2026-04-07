@@ -106,7 +106,9 @@ impl H264StreamCapture {
             .dynamic_cast::<gstreamer::Pipeline>()
             .map_err(|_| H264CaptureError::DowncastError)?;
 
-        let (h264_tx, h264_rx) = flume::unbounded::<H264Frame>();
+        // Bounded to match appsink max-buffers (30). Prevents unbounded RAM growth
+        // if the Zenoh publisher stalls or the event loop blocks on SHM allocation.
+        let (h264_tx, h264_rx) = flume::bounded::<H264Frame>(30);
         let (rgba_tx, rgba_rx) = flume::bounded::<RgbaFrame>(2);
 
         // Wire H264 appsink
