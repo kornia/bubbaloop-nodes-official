@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""camera-detector — Object detection on camera raw frames via Zenoh SHM.
+"""camera-object-detector — Object detection on camera raw frames via Zenoh SHM.
 
 Subscribes to `{key}/raw` (RawImage protobuf, encoding="rgba8", over Zenoh SHM
 published by the rtsp-camera node) and publishes JSON detections to
@@ -18,7 +18,7 @@ import torch
 import yaml
 from ultralytics import YOLO
 
-log = logging.getLogger("camera-detector")
+log = logging.getLogger("camera-object-detector")
 
 
 def load_config(path: str) -> dict:
@@ -133,7 +133,7 @@ class CameraObjectDetector:
         publish:    tapo_terrace/detections   (JSON)
     """
 
-    name = "camera-detector"
+    name = "camera-object-detector"
 
     def __init__(self, ctx, config: dict) -> None:
         self._ctx = ctx
@@ -250,7 +250,7 @@ class CameraObjectDetector:
         ctx._shutdown.wait()
         sub.undeclare()
         inference_thread.join(timeout=2.0)
-        log.info("camera-detector shutdown complete (processed %d frames)", self._seq)
+        log.info("camera-object-detector shutdown complete (processed %d frames)", self._seq)
 
 
 if __name__ == "__main__":
