@@ -1,0 +1,24 @@
+[workspace]
+name = "rf-detr-detector"
+channels = ["conda-forge"]
+platforms = ["linux-aarch64"]
+
+[tasks]
+main = { cmd = "python main.py", env = { PYTHONNOUSERSITE = "1" } }
+test = { cmd = "python -m pytest tests/ -v", env = { PYTHONNOUSERSITE = "1" } }
+
+[dependencies]
+python = ">=3.10,<3.11"
+pip = "*"
+
+[pypi-dependencies]
+pytest = ">=7.0"
+eclipse-zenoh = ">=1.0"
+pyyaml = ">=6.0"
+protobuf = ">=4.0,<6.0"
+torch = { version = "==2.8.0", index = "https://pypi.jetson-ai-lab.io/jp6/cu126" }
+torchvision = { version = "==0.23.0", index = "https://pypi.jetson-ai-lab.io/jp6/cu126" }
+rfdetr = ">=1.6.3"
+huggingface-hub = ">=1.5.0,<2.0"
+numpy = ">=1.24,<2.0"
+bubbaloop-sdk = { git = "https://github.com/kornia/bubbaloop.git", branch = "main", subdirectory = "python-sdk" }

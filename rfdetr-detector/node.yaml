@@ -1,0 +1,27 @@
+name: rf-detr-detector
+version: 0.1.0
+type: python
+description: Object detection using RF-DETR on camera H264 streams
+author: Bubbaloop Team
+
+command: pixi run main
+
+capabilities:
+  - processor
+
+subscribes:
+  - suffix: camera/{name}/compressed
+    description: H264 compressed frames from an rtsp-camera node
+    encoding: application/protobuf
+
+publishes:
+  - suffix: rf-detr-detector/{name}/detections
+    description: RF-DETR object detections with bounding boxes and confidence scores
+    encoding: application/json
+    rate_hz: 10.0
+
+requires:
+  hardware: []
+  software:
+    - GStreamer 1.20+ with gst-plugins-ugly (avdec_h264)
+    - Python 3.11+

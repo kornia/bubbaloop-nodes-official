@@ -1,8 +1,7 @@
-# Instance parameters for rtsp-camera.
-# Run: ./target/release/rtsp_camera_node -c configs/terrace.yaml
-
-name: tapo_terrace
-publish_topic: camera/tapo_terrace/compressed
+name: tapo_terrace_camera
 url: "rtsp://tapo_terrace:clawd2026@192.168.1.151:554/stream1"
 latency: 50
 frame_rate: 10
+hw_accel: nvidia   # nvidia (Jetson VIC) or cpu (software, portable)
+raw_width: 560     # resize target for SHM raw frames
+raw_height: 560

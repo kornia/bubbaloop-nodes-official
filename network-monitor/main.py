@@ -119,7 +119,7 @@ class NetworkMonitorNode:
                 "timestamp": datetime.now(timezone.utc).isoformat(),
                 "sequence": self.sequence,
                 "machine_id": self.ctx.machine_id,
-                "scope": self.ctx.scope,
+                "scope": "",
                 "summary": {"total": len(checks), "healthy": healthy, "unhealthy": len(checks) - healthy},
                 "checks": checks,
             }

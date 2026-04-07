@@ -5,3 +5,9 @@ impl bubbaloop_node::MessageTypeName for CompressedImage {
         "bubbaloop.camera.v1.CompressedImage"
     }
 }
+
+impl bubbaloop_node::MessageTypeName for RawImage {
+    fn type_name() -> &'static str {
+        "bubbaloop.camera.v1.RawImage"
+    }
+}
