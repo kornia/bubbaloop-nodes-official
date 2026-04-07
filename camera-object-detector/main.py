@@ -45,6 +45,11 @@ def load_config(path: str) -> dict:
         raise ValueError(f"target_fps {target_fps} out of range (0.1–30.0)")
     cfg["target_fps"] = target_fps
 
+    device = cfg.get("device", "cuda")
+    if device not in ("cuda", "cpu"):
+        raise ValueError(f"device {device!r} must be 'cuda' or 'cpu'")
+    cfg["device"] = device
+
     return cfg
 
 
@@ -76,13 +81,14 @@ class Detector:
         "xlarge": "yolo11x.pt",
     }
 
-    def __init__(self, confidence_threshold: float = 0.5, model: str = "nano") -> None:
+    def __init__(self, confidence_threshold: float = 0.5, model: str = "nano", device: str = "cuda") -> None:
         model_file = self._MODEL_FILES[model]
-        log.info("Loading YOLO11 model (size=%s, device=cuda)...", model)
+        self._device = device
+        log.info("Loading YOLO11 model (size=%s, device=%s)...", model, device)
         self._model = YOLO(model_file)
         self._threshold = confidence_threshold
         self._class_names = self._model.names  # {0: 'person', 1: 'bicycle', ...}
-        log.info("YOLO11 model loaded (size=%s, %d classes).", model, len(self._class_names))
+        log.info("YOLO11 model loaded (size=%s, device=%s, %d classes).", model, device, len(self._class_names))
 
     def detect(self, image: torch.Tensor) -> list[dict]:
         """Run inference on a CHW float32 CUDA tensor. Returns list of detections."""
@@ -98,7 +104,7 @@ class Detector:
                 )
             else:
                 image = image.unsqueeze(0)
-            results = self._model(image, conf=self._threshold, verbose=False)
+            results = self._model(image, conf=self._threshold, device=self._device, verbose=False)
         except Exception as e:
             log.error("YOLO11 inference error: %s", e)
             return []
@@ -145,9 +151,11 @@ class CameraObjectDetector:
 
         self._topic_key = topic_key
         self._pub = ctx.publisher_json(f"{topic_key}/detections")
+        self._device = config["device"]
         self._detector = Detector(
             confidence_threshold=config["confidence_threshold"],
             model=config["model"],
+            device=self._device,
         )
 
         # Latest decoded frame slot — written by subscriber callback, read by inference loop
@@ -169,36 +177,39 @@ class CameraObjectDetector:
         def _receive_loop() -> None:
             # Buffers are allocated on the first frame using dimensions from the
             # RawImage proto (msg.width, msg.height).  After that, every frame
-            # reuses the same pinned-CPU and CUDA memory — zero per-frame allocs.
+            # reuses the same memory — zero per-frame allocs.
             # On Jetson unified memory, uncontrolled CUDA allocs eat system RAM
             # and cause OOM reboots.
-            rgb_pinned = None
+            device = self._device
+            rgb_buf = None
             rgb_np = None
-            cuda_buf = None
+            dev_buf = None
 
             for msg in sub:
                 w, h = msg.width, msg.height
 
                 # First frame (or resolution change): allocate once.
-                if rgb_pinned is None or rgb_pinned.shape[0] != h or rgb_pinned.shape[1] != w:
-                    rgb_pinned = torch.empty((h, w, 3), dtype=torch.uint8).pin_memory()
-                    rgb_np = rgb_pinned.numpy()
-                    cuda_buf = torch.empty((3, h, w), dtype=torch.float32, device="cuda")
-                    log.info("Allocated frame buffers: %dx%d (pinned CPU + CUDA f32)", w, h)
+                if rgb_buf is None or rgb_buf.shape[0] != h or rgb_buf.shape[1] != w:
+                    if device == "cuda":
+                        rgb_buf = torch.empty((h, w, 3), dtype=torch.uint8).pin_memory()
+                        dev_buf = torch.empty((3, h, w), dtype=torch.float32, device="cuda")
+                        log.info("Allocated frame buffers: %dx%d (pinned CPU + CUDA f32)", w, h)
+                    else:
+                        rgb_buf = torch.empty((h, w, 3), dtype=torch.uint8)
+                        dev_buf = torch.empty((3, h, w), dtype=torch.float32)
+                        log.info("Allocated frame buffers: %dx%d (CPU f32)", w, h)
+                    rgb_np = rgb_buf.numpy()
 
                 rgba = np.frombuffer(msg.data, dtype=np.uint8).reshape(h, w, 4)
                 np.copyto(rgb_np, rgba[:, :, :3])
                 del rgba, msg
 
-                # Pinned → CUDA with dtype promotion (uint8→float32 in copy_).
-                # permute() is a view (no alloc), contiguous() is a small CPU temp
-                # freed immediately. copy_() reuses cuda_buf — no CUDA malloc.
-                chw_u8 = rgb_pinned.permute(2, 0, 1).contiguous()
-                cuda_buf.copy_(chw_u8).div_(255.0)
+                chw_u8 = rgb_buf.permute(2, 0, 1).contiguous()
+                dev_buf.copy_(chw_u8).div_(255.0)
                 del chw_u8
 
                 with self._frame_lock:
-                    self._latest_frame = cuda_buf
+                    self._latest_frame = dev_buf
 
         def _inference_loop() -> None:
             interval = 1.0 / self._target_fps
