@@ -180,20 +180,23 @@ class RfDetrDetectorNode:
         w, h = self._raw_width, self._raw_height
         expected = w * h * 4
 
+        # Pre-allocate reusable CPU buffer — avoids per-frame malloc at camera framerate.
+        # Pinned memory lets CUDA DMA copy without an extra staging alloc.
+        _rgb_buf = torch.empty((h, w, 3), dtype=torch.uint8).pin_memory()
+
         sub = ctx.subscriber_raw(f"{self._topic_key}/raw", local=True)
 
         def _receive_loop() -> None:
             for raw_bytes in sub:
                 if len(raw_bytes) != expected:
                     continue
-                # RGBA HWC uint8 → RGB CHW float32 [0,1] on CUDA (drop alpha, non-blocking H2D)
+                # View incoming bytes as HWC RGBA — no copy (SDK already owns the bytes).
                 frame_cpu = np.frombuffer(raw_bytes, dtype=np.uint8).reshape(h, w, 4)
-                tensor = (
-                    torch.from_numpy(frame_cpu[:, :, :3].copy())
-                    .permute(2, 0, 1)
-                    .to(dtype=torch.float32, device="cuda", non_blocking=True)
-                    .div_(255.0)
-                )
+                # Copy only RGB channels into the pre-allocated pinned buffer.
+                np.copyto(_rgb_buf.numpy(), frame_cpu[:, :, :3])
+                del frame_cpu, raw_bytes  # release SDK copy immediately
+                # HWC uint8 → CHW float32 [0,1] on CUDA via pinned H2D DMA.
+                tensor = _rgb_buf.permute(2, 0, 1).to(dtype=torch.float32, device="cuda").div_(255.0)
                 with self._frame_lock:
                     self._latest_frame = tensor
 
