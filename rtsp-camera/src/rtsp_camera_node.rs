@@ -252,7 +252,9 @@ impl bubbaloop_node::Node for RtspCameraNode {
                                         .expect("SHM slot large enough");
                                     // Truncate SHM buffer to actual proto size — trailing
                                     // zeros from the oversized slot break protobuf parsing.
-                                    sbuf.try_resize(std::num::NonZeroUsize::new(encoded_len).unwrap());
+                                    if !sbuf.try_resize(std::num::NonZeroUsize::new(encoded_len).unwrap()) {
+                                        log::warn!("[{}] SHM try_resize failed, proto may have trailing zeros", camera_name);
+                                    }
                                     if raw_pub.put(ZBytes::from(sbuf)).await.is_ok() {
                                         raw_published += 1;
                                     }

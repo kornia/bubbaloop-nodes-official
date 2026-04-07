@@ -216,16 +216,14 @@ class RfDetrDetectorNode:
                     continue
 
                 with self._frame_lock:
-                    frame = self._latest_frame
+                    # Clone inside lock to prevent receive thread from overwriting
+                    # cuda_buf contents between lock release and clone.
+                    frame = self._latest_frame.clone() if self._latest_frame is not None else None
                     self._latest_frame = None
 
                 if frame is None:
                     time.sleep(0.05)
                     continue
-
-                # Clone so inference doesn't race with receive overwriting cuda_buf.
-                # One clone per inference tick (1fps) — negligible.
-                frame = frame.clone()
 
                 next_run = time.monotonic() + interval
                 t0 = time.monotonic()
