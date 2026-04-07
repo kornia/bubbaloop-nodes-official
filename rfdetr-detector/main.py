@@ -170,13 +170,10 @@ class RfDetrDetectorNode:
 
     def run(self) -> None:
         ctx = self._ctx
-        sub = ctx.subscriber_raw(f"{self._topic_key}/raw", local=True)
+        sub = ctx.subscriber_proto(f"{self._topic_key}/raw", RawImage, local=True)
 
         def _receive_loop() -> None:
-            for raw_bytes in sub:
-                # Deserialize RawImage proto — width/height come from the message.
-                msg = RawImage.FromString(raw_bytes)
-                del raw_bytes
+            for msg in sub:
                 # torch.frombuffer shares memory with msg.data (no extra CPU copy).
                 # Full RGBA goes to GPU in one H2D DMA; alpha drop + normalize on GPU.
                 tensor = (
