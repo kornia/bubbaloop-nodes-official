@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 """rf-detr-detector — Object detection on camera raw frames via Zenoh SHM.
 
-Subscribes to `{key}/raw` (RawImage protobuf, RGBA, published over Zenoh SHM
-by the rtsp-camera node) and publishes JSON detections to `{key}/detections`.
+Subscribes to `{key}/raw` (RawImage protobuf, encoding="rgba8", over Zenoh SHM
+published by the rtsp-camera node) and publishes JSON detections to
+`{key}/detections`.
 
 Topic key is derived from the instance name: `tapo_terrace_detector` → `tapo_terrace`.
-Schema is fetched live from the camera node's schema queryable.
 """
 
 import logging
@@ -13,7 +13,6 @@ import threading
 import time
 from datetime import datetime, timezone
 
-import numpy as np
 import torch
 import yaml
 from rfdetr import RFDETRBase, RFDETRLarge, RFDETRMedium, RFDETRSmall, RFDETRNano
@@ -150,10 +149,6 @@ class RfDetrDetectorNode:
         topic_key = instance_name.removesuffix("_detector")
 
         self._topic_key = topic_key
-        self._raw_topic = ctx.topic(f"{topic_key}/raw")
-        self._raw_width = int(config.get("raw_width", 560))
-        self._raw_height = int(config.get("raw_height", 560))
-
         self._pub = ctx.publisher_json(f"{topic_key}/detections")
         self._detector = Detector(
             confidence_threshold=config["confidence_threshold"],
@@ -166,34 +161,30 @@ class RfDetrDetectorNode:
         self._seq = 0
 
         log.info(
-            "Subscribing to %s (RGBA %dx%d), publishing to %s at %.1f fps",
-            self._raw_topic,
-            self._raw_width,
-            self._raw_height,
+            "Subscribing to %s/raw (RawImage proto), publishing to %s at %.1f fps",
+            topic_key,
             ctx.topic(f"{topic_key}/detections"),
             self._target_fps,
         )
 
     def run(self) -> None:
         ctx = self._ctx
-
-        w, h = self._raw_width, self._raw_height
-        expected = w * h * 4
-
-        sub = ctx.subscriber_raw(f"{self._topic_key}/raw", local=True)
+        sub = ctx.subscribe(f"{self._topic_key}/raw", local=True)
 
         def _receive_loop() -> None:
-            for raw_bytes in sub:
-                if len(raw_bytes) != expected:
-                    continue
-                # RGBA HWC uint8 → RGB CHW float32 [0,1] on CUDA (drop alpha, non-blocking H2D)
-                frame_cpu = np.frombuffer(raw_bytes, dtype=np.uint8).reshape(h, w, 4)
+            for msg in sub:
+                # torch.frombuffer shares memory with msg.data (no extra CPU copy).
+                # Full RGBA goes to GPU in one H2D DMA; alpha drop + normalize on GPU.
                 tensor = (
-                    torch.from_numpy(frame_cpu[:, :, :3].copy())
+                    torch.frombuffer(msg.data, dtype=torch.uint8)
+                    .reshape(msg.height, msg.width, 4)
+                    .to(device="cuda")
+                    [:, :, :3]
                     .permute(2, 0, 1)
-                    .to(dtype=torch.float32, device="cuda", non_blocking=True)
+                    .to(dtype=torch.float32)
                     .div_(255.0)
                 )
+                del msg
                 with self._frame_lock:
                     self._latest_frame = tensor
 

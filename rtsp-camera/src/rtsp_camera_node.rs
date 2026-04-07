@@ -1,6 +1,6 @@
 use crate::config::Config;
 use crate::h264_capture::{H264Frame, H264StreamCapture};
-use crate::proto::CompressedImage;
+use crate::proto::{CompressedImage, RawImage};
 use bubbaloop_node::publisher::ProtoPublisher;
 use bubbaloop_node::schemas::Header;
 use bubbaloop_node::zenoh::bytes::ZBytes;
@@ -9,6 +9,7 @@ use bubbaloop_node::zenoh::shm::{
 };
 use bubbaloop_node::zenoh::Wait;
 use bubbaloop_node::RawPublisher;
+use prost::Message;
 use std::sync::Arc;
 
 /// Extract NAL unit types from an H264 byte-stream (Annex B format).
@@ -56,10 +57,9 @@ fn frame_to_compressed_image(
 }
 
 /// RTSP Camera node — captures a single H264 RTSP stream and publishes:
-///   - `{key}/compressed`: H264 byte-stream (Annex-B, protobuf)
-///   - `{key}/raw`: RGBA raw bytes resized to `raw_width × raw_height`,
-///     published directly into a Zenoh SHM buffer (no protobuf).
-///     Payload = `raw_width * raw_height * 4` raw RGBA bytes.
+///   - `{key}/compressed`: H264 byte-stream (Annex-B, `CompressedImage` protobuf)
+///   - `{key}/raw`: RGBA frames as `RawImage` protobuf over Zenoh SHM.
+///     Encoding = "rgba8", step = width * 4. Transport is SHM for low latency.
 pub struct RtspCameraNode {
     config: Config,
 }
@@ -122,15 +122,18 @@ impl bubbaloop_node::Node for RtspCameraNode {
         // local=true: local/{machine_id}/... topic + CongestionControl::Block for SHM
         let raw_pub: RawPublisher = ctx.publisher_raw(&raw_suffix, true).await?;
 
-        // SHM pool: 4 × frame_size gives enough room for BlockOn<GarbageCollect>
-        // to reclaim buffers the subscriber has already consumed.
-        let shm_pool_size = frame_size * 4;
+        // SHM pool: each slot holds a serialized RawImage proto.
+        // Proto overhead over raw pixels is ~128 bytes (header + field tags/lengths).
+        // 4 slots gives BlockOn<GarbageCollect> room to reclaim consumed buffers.
+        let proto_overhead = 128usize;
+        let shm_slot_size = frame_size + proto_overhead;
+        let shm_pool_size = shm_slot_size * 4;
         let shm_backend = PosixShmProviderBackend::builder(shm_pool_size)
             .wait()
             .map_err(|e| bubbaloop_node::NodeError::Decode(format!("SHM backend: {e:?}")))?;
         let shm_provider = ShmProviderBuilder::backend(shm_backend).wait();
         let shm_layout = shm_provider
-            .alloc_layout(frame_size)
+            .alloc_layout(shm_slot_size)
             .map_err(|e| bubbaloop_node::NodeError::Decode(format!("SHM layout: {e:?}")))?;
 
         log::info!(
@@ -225,10 +228,27 @@ impl bubbaloop_node::Node for RtspCameraNode {
                 result = capture.rgba_receiver().recv_async() => {
                     match result {
                         Ok(rgba_frame) => {
-                            // Alloc SHM buffer, copy RGBA bytes, publish zero-copy to subscriber.
+                            // Serialize RawImage proto into SHM buffer and publish.
+                            let msg = RawImage {
+                                header: Some(Header {
+                                    acq_time: rgba_frame.pts,
+                                    pub_time: get_pub_time(),
+                                    sequence: rgba_frame.sequence,
+                                    frame_id: camera_name.clone(),
+                                    machine_id: ctx.machine_id.clone(),
+                                    scope: String::new(),
+                                }),
+                                width: raw_width,
+                                height: raw_height,
+                                encoding: "rgba8".to_string(),
+                                step: raw_width * 4,
+                                data: rgba_frame.data,
+                            };
+                            let encoded_len = msg.encoded_len();
                             match shm_layout.alloc().with_policy::<BlockOn<GarbageCollect>>().await {
                                 Ok(mut sbuf) => {
-                                    sbuf[..frame_size].copy_from_slice(&rgba_frame.data);
+                                    msg.encode(&mut &mut sbuf[..encoded_len])
+                                        .expect("SHM slot large enough");
                                     if raw_pub.put(ZBytes::from(sbuf)).await.is_ok() {
                                         raw_published += 1;
                                     }
