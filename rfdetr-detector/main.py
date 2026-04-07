@@ -15,7 +15,6 @@ from datetime import datetime, timezone
 
 import torch
 import yaml
-from camera_pb2 import RawImage
 from rfdetr import RFDETRBase, RFDETRLarge, RFDETRMedium, RFDETRSmall, RFDETRNano
 
 log = logging.getLogger("rf-detr-detector")
@@ -170,7 +169,7 @@ class RfDetrDetectorNode:
 
     def run(self) -> None:
         ctx = self._ctx
-        sub = ctx.subscriber_proto(f"{self._topic_key}/raw", RawImage, local=True)
+        sub = ctx.subscriber_auto(f"{self._topic_key}/raw", local=True)
 
         def _receive_loop() -> None:
             for msg in sub:
