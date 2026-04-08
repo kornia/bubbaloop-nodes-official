@@ -49,7 +49,6 @@ fn frame_to_compressed_image(
             sequence: frame.sequence,
             frame_id: camera_name.to_string(),
             machine_id: machine_id.to_string(),
-            ..Default::default()
         }),
         format: "h264".to_string(),
         data: frame.as_slice().into(),
@@ -237,7 +236,6 @@ impl bubbaloop_node::Node for RtspCameraNode {
                                     sequence: rgba_frame.sequence,
                                     frame_id: camera_name.clone(),
                                     machine_id: ctx.machine_id.clone(),
-                                    ..Default::default()
                                 }),
                                 width: raw_width,
                                 height: raw_height,
