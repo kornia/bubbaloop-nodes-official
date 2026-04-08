@@ -95,13 +95,11 @@ def test_build_payload_with_detections():
     payload = build_payload(
         frame_id="tapo_terrace",
         machine_id="nvidia_orin00",
-        scope="local",
         sequence=42,
         detections=detections,
     )
     assert payload["frame_id"] == "tapo_terrace"
     assert payload["machine_id"] == "nvidia_orin00"
-    assert payload["scope"] == "local"
     assert payload["sequence"] == 42
     assert len(payload["detections"]) == 1
     assert payload["detections"][0]["class_name"] == "person"
@@ -112,7 +110,6 @@ def test_build_payload_empty_detections():
     payload = build_payload(
         frame_id="tapo_terrace",
         machine_id="nvidia_orin00",
-        scope="local",
         sequence=0,
         detections=[],
     )

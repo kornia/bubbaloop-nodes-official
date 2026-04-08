@@ -1,0 +1,29 @@
+name: camera-vlm
+version: 0.1.0
+type: python
+description: Scene description using Qwen2.5-VL vision model on camera raw frames via Zenoh SHM
+author: Bubbaloop Team
+
+command: pixi run main
+
+capabilities:
+  - processor
+
+subscribes:
+  - suffix: "{name}/raw"
+    description: Raw RGBA frames from an rtsp-camera node (SHM, local)
+    encoding: application/protobuf
+
+publishes:
+  - suffix: "{name}/description"
+    description: Scene description text from Qwen2.5-VL vision model
+    encoding: application/json
+    rate_hz: 0.1
+
+requires:
+  hardware:
+    - NVIDIA GPU with CUDA support (Jetson or desktop)
+  software:
+    - Python 3.10+
+    - PyTorch with CUDA
+    - HuggingFace transformers

@@ -10,8 +10,11 @@ Official collection of standalone [bubbaloop](https://github.com/kornia/bubbaloo
 | **system-telemetry** | Python | `.../system-telemetry/metrics` | CPU, memory, disk, network, and load metrics via psutil |
 | **network-monitor** | Python | `.../network-monitor/status` | HTTP, DNS, and ICMP ping health checks |
 | **openmeteo** | Python | `.../weather/current`, `.../weather/hourly`, `.../weather/daily` | Open-Meteo weather publisher (current, 48h hourly, 7-day daily) |
+| **camera-object-detector** | Python | `.../camera-object-detector/{name}/detections` | Subscribes to local camera raw frames, publishes detection results as JSON |
+| **camera-vlm** | Python | `.../camera-vlm/{name}/analysis` | Subscribes to local camera raw frames, publishes VLM analysis as JSON |
+| **gpio-sensor** | — | — | Placeholder (target directory only) |
 
-All topics are prefixed with `bubbaloop/{scope}/{machine}/`.
+All topics are prefixed with either `bubbaloop/global/{machine}/` (network-visible) or `bubbaloop/local/{machine}/` (SHM-only, same machine).
 
 ## Quick Start
 
@@ -163,21 +166,28 @@ if __name__ == "__main__":
 
 ## Topic Convention
 
+Topics use one of two fixed key spaces:
+
 ```
-bubbaloop/{scope}/{machine}/{node-name}/{resource}
+bubbaloop/global/{machine}/{node-name}/{resource}   # network-visible
+bubbaloop/local/{machine}/{node-name}/{resource}    # SHM-only, same machine
 ```
+
+| Key space | Visibility | Use when |
+|-----------|-----------|----------|
+| `global` | Crosses WebSocket bridge — visible to dashboard, CLI, remote machines | Sensor data, health, schema, anything the outside world needs to see |
+| `local` | Shared memory only, never leaves the machine | High-bandwidth raw frames or internal inter-node data on the same host |
 
 | Variable | Default | Purpose |
 |----------|---------|---------|
-| `BUBBALOOP_SCOPE` | `local` | Deployment context (`warehouse-east`, `farm-north`, etc.) |
 | `BUBBALOOP_MACHINE_ID` | hostname | Machine identifier (hyphens replaced with `_`) |
 
 **Special topics:**
 
 | Topic | Purpose |
 |-------|---------|
-| `bubbaloop/{scope}/{machine}/{name}/health` | Heartbeat (every 5s, SDK handles automatically) |
-| `bubbaloop/{scope}/{machine}/{name}/schema` | Protobuf FileDescriptorSet queryable |
+| `bubbaloop/global/{machine}/{name}/health` | Heartbeat (every 5s, SDK handles automatically) |
+| `bubbaloop/global/{machine}/{name}/schema` | Protobuf FileDescriptorSet queryable |
 
 **Discovery wildcards:**
 - All data: `bubbaloop/**`
@@ -224,7 +234,7 @@ For multi-instance nodes (rtsp-camera), the `name` field drives topic namespacin
 
 ```yaml
 # rtsp-camera/configs/entrance.yaml
-name: tapo_entrance    # → health: bubbaloop/local/host/tapo_entrance/health
+name: tapo_entrance    # → health: bubbaloop/global/host/tapo_entrance/health
 publish_topic: camera/tapo_entrance/compressed
 url: "rtsp://..."
 ```
@@ -251,7 +261,7 @@ Reference implementations:
 Machine (e.g., Jetson Orin)
 +------------------------------------------------+
 |  bubbaloop daemon                              |
-|  ├── Zenoh API: {scope}/{mid}/daemon/api/*     |
+|  ├── Zenoh API: global/{mid}/daemon/api/*      |
 |  ├── Health monitor (30s timeout per node)     |
 |  │                                             |
 |  ├── rtsp-camera    (systemd service, Rust)    |

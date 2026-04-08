@@ -107,7 +107,6 @@ class SystemTelemetryNode:
                 "timestamp": datetime.now(timezone.utc).isoformat(),
                 "sequence": self._seq,
                 "machine_id": self.ctx.machine_id,
-                "scope": "",
             }
             if self.do_cpu:
                 payload["cpu"] = collect_cpu()

@@ -12,6 +12,7 @@ capabilities:
 publishes:
   - suffix: camera/{name}/compressed
     description: "H264 compressed video frames from RTSP stream"
+    encoding: application/protobuf
     schema_type: "bubbaloop.camera.v1.CompressedImage"
     rate_hz: 30.0
 

@@ -17,7 +17,7 @@ Branch naming: `feat/<topic>`, `fix/<topic>`, `chore/<topic>`
 
 ## System Context
 
-A bubbaloop node is an independent process that publishes/subscribes to data via Zenoh and registers with the local bubbaloop daemon. The daemon is a **passive skill runtime** that manages lifecycle (start/stop/restart), monitors health via heartbeats, and exposes capabilities through an **MCP (Model Context Protocol) server**. AI agents orchestrate nodes via MCP tools -- the `bubbaloop` CLI and TUI are convenience wrappers for the same underlying API. Nodes can run on any machine -- the daemon scopes all topics by `scope` and `machine_id`.
+A bubbaloop node is an independent process that publishes/subscribes to data via Zenoh and registers with the local bubbaloop daemon. The daemon is a **passive skill runtime** that manages lifecycle (start/stop/restart), monitors health via heartbeats, and exposes capabilities through an **MCP (Model Context Protocol) server**. AI agents orchestrate nodes via MCP tools -- the `bubbaloop` CLI and TUI are convenience wrappers for the same underlying API. Nodes can run on any machine -- the daemon scopes all topics by key space (`global` or `local`) and `machine_id`.
 
 **When creating a node, you are building a standalone process. The daemon will manage it as a systemd service. Nodes do not need to know about MCP -- the daemon translates MCP tool calls into lifecycle operations.**
 
@@ -85,7 +85,7 @@ Every node **MUST** publish heartbeats:
 
 | Field | Value |
 |-------|-------|
-| Topic | `bubbaloop/{scope}/{machine}/{name}/health` |
+| Topic | `bubbaloop/global/{machine}/{name}/health` |
 | Frequency | Every 5 seconds (daemon timeout is 30s) |
 | Payload | Simple string `"ok"` |
 | Transport | Vanilla zenoh `session.put()` -- NOT protobuf |
@@ -156,12 +156,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 ```
 
-The SDK automatically handles: Zenoh session (client mode, scouting disabled), health heartbeat (5s to `{name}/health`), schema queryable (`{name}/schema`), YAML config loading, SIGINT/SIGTERM, scope/machine_id resolution, and logging.
+The SDK automatically handles: Zenoh session (client mode, scouting disabled), health heartbeat (5s to `{name}/health`), schema queryable (`{name}/schema`), YAML config loading, SIGINT/SIGTERM, key-space/machine_id resolution, and logging.
 
 **Instance naming:** The SDK reads the `name` field from the config YAML and uses it as the per-instance name for health and schema topics. This allows multiple instances of the same node type to coexist without topic collisions:
 ```yaml
 # configs/entrance.yaml
-name: tapo_entrance          # → health: bubbaloop/local/host/tapo_entrance/health
+name: tapo_entrance          # → health: bubbaloop/global/host/tapo_entrance/health
 publish_topic: camera/tapo_entrance/compressed
 url: "rtsp://..."
 ```
@@ -243,39 +243,42 @@ publishes:
 
 ### Topic Naming Convention
 
-All data topics follow this scoped pattern:
+All data topics use one of two fixed key spaces:
+
+- **Global** (`bubbaloop/global/{machine}/{suffix}`): published over the network, visible to other machines.
+- **Local** (`bubbaloop/local/{machine}/{suffix}`): SHM-only, same-machine communication only.
 
 ```
-bubbaloop/{scope}/{machine}/{node-name}/{resource}
+bubbaloop/global/{machine}/{node-name}/{resource}   # network-visible
+bubbaloop/local/{machine}/{node-name}/{resource}    # SHM, same machine only
 ```
 
 Examples:
-- `bubbaloop/local/jetson1/system-telemetry/metrics`
-- `bubbaloop/warehouse-east/dock-1/network-monitor/status`
-- `bubbaloop/local/jetson1/tapo_entrance/health`
+- `bubbaloop/global/jetson1/system-telemetry/metrics`
+- `bubbaloop/global/jetson1/tapo_entrance/health`
+- `bubbaloop/local/jetson1/tapo_entrance/frames`
 
 **Environment variables:**
 
 | Variable | Default | Purpose |
 |----------|---------|---------|
-| `BUBBALOOP_SCOPE` | `local` | Deployment context (site, fleet, etc.) |
 | `BUBBALOOP_MACHINE_ID` | hostname | Machine identifier (hyphens replaced with underscores) |
 
-In `config.yaml`, specify only the topic suffix — the SDK prepends the scoped base:
+In `config.yaml`, specify only the topic suffix — the SDK prepends the key-space base:
 ```yaml
 publish_topic: camera/tapo_entrance/compressed
-# becomes: bubbaloop/{scope}/{machine}/camera/tapo_entrance/compressed
+# becomes: bubbaloop/global/{machine}/camera/tapo_entrance/compressed
 ```
 
 **Topic categories:**
 
 | Category | Pattern | Example |
 |----------|---------|---------|
-| Node data | `bubbaloop/{scope}/{machine}/{node}/{resource}` | `bubbaloop/local/jetson1/system-telemetry/metrics` |
-| Health | `bubbaloop/{scope}/{machine}/{node}/health` | `bubbaloop/local/jetson1/tapo_entrance/health` |
-| Schema | `bubbaloop/{scope}/{machine}/{node}/schema` | `bubbaloop/local/jetson1/tapo_entrance/schema` |
-| Daemon API | `bubbaloop/{scope}/{machine}/daemon/api/{endpoint}` | `bubbaloop/local/jetson1/daemon/api/nodes` |
-| Fleet | `bubbaloop/{scope}/fleet/{action}` | `bubbaloop/warehouse-east/fleet/announce` |
+| Node data | `bubbaloop/global/{machine}/{node}/{resource}` | `bubbaloop/global/jetson1/system-telemetry/metrics` |
+| Health | `bubbaloop/global/{machine}/{node}/health` | `bubbaloop/global/jetson1/tapo_entrance/health` |
+| Schema | `bubbaloop/global/{machine}/{node}/schema` | `bubbaloop/global/jetson1/tapo_entrance/schema` |
+| Daemon API | `bubbaloop/global/{machine}/daemon/api/{endpoint}` | `bubbaloop/global/jetson1/daemon/api/nodes` |
+| Local data | `bubbaloop/local/{machine}/{node}/{resource}` | `bubbaloop/local/jetson1/tapo_entrance/frames` |
 
 Discovery wildcards:
 - All health: `bubbaloop/**/health`
@@ -323,9 +326,7 @@ use crate::proto::MyData;                          // generated locally
 ```
 
 **Python nodes:**
-1. Copy protos from `bubbaloop-schemas/protos/` to local `protos/` directory.
-2. Compile: `protoc --python_out=. --pyi_out=. protos/*.proto`
-3. Import: `from protos import header_pb2, my_node_pb2`
+Python nodes do NOT need local `_pb2` files. The `ProtoSubscriber` auto-decodes via `SchemaRegistry` (fetches `FileDescriptorSet` from the publishing node's `{name}/schema` queryable at runtime). Python nodes that publish use `JsonPublisher` (JSON payloads) — no proto compilation needed.
 
 **Runtime Schema Discovery:**
 The SDK automatically serves a `FileDescriptorSet` at `{name}/schema` via Zenoh queryable. Pass your compiled descriptor via `Node::descriptor()`:
@@ -344,12 +345,12 @@ fn descriptor() -> &'static [u8] {
 
 **Config:**
 - Include a `name` field in `config.yaml` — SDK uses it for per-instance health/schema topics
-- Specify only the topic suffix (no `bubbaloop/{scope}/{machine}/` prefix) — SDK prepends it
+- Specify only the topic suffix (no `bubbaloop/global/{machine}/` prefix) — SDK prepends it
 
 **Rust nodes**: Use the Node SDK (`bubbaloop-node`):
   - `ctx.publisher_proto::<MyMsg>("suffix").await?`
   - `ctx.publisher_json("suffix").await?`
-  - `ctx.topic("suffix")` → `bubbaloop/{scope}/{machine}/suffix`
+  - `ctx.topic("suffix")` → `bubbaloop/global/{machine}/suffix`
 
 **Python nodes**: Use `bubbaloop-sdk` (`run_node()` + `NodeContext`):
   - `ctx.publisher_json("suffix")` → publishes `APPLICATION_JSON`
@@ -421,10 +422,10 @@ Before submitting a new node, verify ALL items:
 
 ### Config file
 - [ ] Has a `name` field (used for per-instance health/schema topics)
-- [ ] Topic suffix only — no `bubbaloop/{scope}/{machine}/` prefix
+- [ ] Topic suffix only — no `bubbaloop/global/{machine}/` or `bubbaloop/local/{machine}/` prefix
 
 ### Communication
-- [ ] Health heartbeat at `bubbaloop/{scope}/{machine}/{name}/health` every 5s (SDK: automatic)
+- [ ] Health heartbeat at `bubbaloop/global/{machine}/{name}/health` every 5s (SDK: automatic)
 - [ ] JSON nodes: field names in snake_case (`wind_speed_10m`, `bytes_sent`) — dashboard applies snakeToCamel automatically
 - [ ] All Zenoh connections use `mode: "client"` — never peer mode
 
@@ -469,7 +470,7 @@ pixi run main &
 z_sub -e tcp/localhost:7447 -k "bubbaloop/**/health"
 
 # Verify data publishing
-z_sub -e tcp/localhost:7447 -k "bubbaloop/local/*/**"
+z_sub -e tcp/localhost:7447 -k "bubbaloop/global/**"
 
 kill %1 %2
 ```
