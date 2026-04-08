@@ -124,9 +124,9 @@ checksum = "7f202df86484c868dbad7eaa557ef785d5c66295e41b460ef922eca0723b842c"
 
 [[package]]
 name = "arc-swap"
-version = "1.9.0"
+version = "1.9.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a07d1f37ff60921c83bdfc7407723bdefe89b44b98a9b772f225c8f9d67141a6"
+checksum = "6a3a1fd6f75306b68087b831f025c712524bcb19aad54e557b1129cfa0a2b207"
 dependencies = [
  "rustversion",
 ]
@@ -278,16 +278,17 @@ dependencies = [
 [[package]]
 name = "bubbaloop-node"
 version = "0.1.0"
+source = "git+https://github.com/kornia/bubbaloop.git?branch=main#8075ffa8aa79ec5549385ed270496daff23826b1"
 dependencies = [
  "anyhow",
  "argh",
  "async-trait",
+ "bubbaloop-schemas",
  "ctrlc",
  "env_logger",
  "hostname",
  "log",
  "prost 0.14.3",
- "prost-build",
  "prost-reflect",
  "prost-types 0.14.3",
  "serde",
@@ -301,9 +302,20 @@ dependencies = [
 [[package]]
 name = "bubbaloop-node-build"
 version = "0.1.0"
-source = "git+https://github.com/kornia/bubbaloop.git?branch=main#73055cf4da54ef65ce03cc257c3d9e141b15508d"
+source = "git+https://github.com/kornia/bubbaloop.git?branch=main#8075ffa8aa79ec5549385ed270496daff23826b1"
 dependencies = [
  "prost-build",
+]
+
+[[package]]
+name = "bubbaloop-schemas"
+version = "0.1.0"
+source = "git+https://github.com/kornia/bubbaloop.git?branch=main#8075ffa8aa79ec5549385ed270496daff23826b1"
+dependencies = [
+ "prost 0.14.3",
+ "prost-build",
+ "prost-types 0.14.3",
+ "serde",
 ]
 
 [[package]]
@@ -774,11 +786,11 @@ dependencies = [
 
 [[package]]
 name = "fastrand"
-version = "2.3.0"
+version = "2.4.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "37909eebbb50d72f9059c3b6d82c0463f2ff062c9e95845c43a6c9c0355411be"
+checksum = "9f1f227452a390804cdb637b74a86990f2a7d7ba4b7d5693aac9b4dd6defd8d6"
 dependencies = [
- "getrandom 0.2.17",
+ "getrandom 0.3.4",
 ]
 
 [[package]]
@@ -2864,9 +2876,9 @@ dependencies = [
 
 [[package]]
 name = "semver"
-version = "1.0.27"
+version = "1.0.28"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d767eb0aabc880b29956c35734170f26ed551a859dbd361d140cdbeca61ab1e2"
+checksum = "8a7852d02fc848982e0c167ef163aaff9cd91dc640ba85e263cb1ce46fae51cd"
 
 [[package]]
 name = "serde"
@@ -3551,9 +3563,9 @@ dependencies = [
 
 [[package]]
 name = "toml_edit"
-version = "0.25.10+spec-1.1.0"
+version = "0.25.11+spec-1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a82418ca169e235e6c399a84e395ab6debeb3bc90edc959bf0f48647c6a32d1b"
+checksum = "0b59c4d22ed448339746c59b905d24568fcbb3ab65a500494f7b8c3e97739f2b"
 dependencies = [
  "indexmap 2.13.1",
  "toml_datetime 1.1.1+spec-1.1.0",
