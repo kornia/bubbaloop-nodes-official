@@ -9,18 +9,6 @@ command: pixi run main
 capabilities:
   - sensor
 
-publishes:
-  - suffix: network-monitor/status
-    description: "Network connectivity status (HTTP, DNS, ping latency and health)"
-    encoding: application/json
-    rate_hz: 0.1
-
-commands:
-  - name: set_interval
-    description: "Change the check interval"
-    params:
-      rate_hz: float            # e.g. 0.1 for every 10s
-
 requires:
   hardware:
     - network

@@ -56,7 +56,6 @@ def load_config(path: str) -> dict:
 def build_payload(
     frame_id: str,
     machine_id: str,
-    scope: str,
     sequence: int,
     detections: list[dict],
 ) -> dict:
@@ -64,7 +63,6 @@ def build_payload(
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "frame_id": frame_id,
         "machine_id": machine_id,
-        "scope": scope,
         "sequence": sequence,
         "detections": detections,
     }
@@ -239,7 +237,6 @@ class CameraObjectDetector:
                 payload = build_payload(
                     frame_id=ctx.instance_name,
                     machine_id=ctx.machine_id,
-                    scope="",
                     sequence=self._seq,
                     detections=detections,
                 )

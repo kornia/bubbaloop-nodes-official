@@ -1,0 +1,6 @@
+name: tapo_terrace_vlm
+model: Qwen/Qwen2.5-VL-3B-Instruct
+device: cuda
+target_fps: 0.1
+prompt: "Describe this scene in one or two sentences."
+max_tokens: 128

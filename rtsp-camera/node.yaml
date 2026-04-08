@@ -9,18 +9,6 @@ command: ./target/release/rtsp_camera_node
 capabilities:
   - sensor
 
-publishes:
-  - suffix: camera/{name}/compressed
-    description: "H264 compressed video frames from RTSP stream"
-    schema_type: "bubbaloop.camera.v1.CompressedImage"
-    rate_hz: 30.0
-
-commands:
-  - name: set_framerate
-    description: "Change the capture frame rate"
-    params:
-      fps: float                # 1.0–60.0
-
 requires:
   hardware:
     - network
