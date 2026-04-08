@@ -9,23 +9,6 @@ command: pixi run main
 capabilities:
   - sensor
 
-publishes:
-  - suffix: weather/current
-    description: "Current weather conditions — temperature, humidity, wind, precipitation, pressure"
-
-  - suffix: weather/hourly
-    description: "Hourly weather forecast (48 hours by default)"
-
-  - suffix: weather/daily
-    description: "Daily weather forecast (7 days by default)"
-
-commands:
-  - name: set_location
-    description: "Change the weather location"
-    params:
-      latitude: float           # e.g. 41.3851
-      longitude: float          # e.g. 2.1734
-
 requires:
   hardware:
     - network

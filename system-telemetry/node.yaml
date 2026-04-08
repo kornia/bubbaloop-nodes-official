@@ -9,16 +9,6 @@ command: pixi run main
 capabilities:
   - sensor
 
-publishes:
-  - suffix: system-telemetry/metrics
-    description: "System metrics — CPU, memory, disk, network I/O, load average"
-
-commands:
-  - name: set_rate
-    description: "Change the publish rate"
-    params:
-      rate_hz: float            # 0.001–100.0
-
 requires:
   hardware: []
   software:

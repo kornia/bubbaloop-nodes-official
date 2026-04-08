@@ -9,10 +9,6 @@ command: pixi run main
 capabilities:
   - processor
 
-publishes:
-  - suffix: "{name}/detections"
-    description: YOLO11 object detections with bounding boxes and confidence scores
-
 requires:
   hardware:
     - NVIDIA GPU with CUDA support (Jetson or desktop)

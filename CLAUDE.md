@@ -187,7 +187,7 @@ bubbaloop node init <name> -t python -d "Description" -o ./<name>
 ### Node Structure Requirements
 
 Every node directory MUST contain:
-- `node.yaml` — **manifest** (name, version, type, description, author, build, command, **capabilities**, **publishes**, **commands**, **requires**)
+- `node.yaml` — **manifest** (name, version, type, description, author, build, command, **capabilities**, **requires**)
 - Instance config file (e.g., `config.yaml`) — runtime parameters, passed to binary via `-c`
 - `pixi.toml` — build/run tasks and environment
 
@@ -208,10 +208,6 @@ command: pixi run main        # daemon appends: -c /path/to/config.yaml
 capabilities:
   - sensor                   # ONLY: sensor | actuator | processor | gateway
 
-publishes:
-  - suffix: camera/{name}/compressed
-    description: H264-compressed frames
-
 requires:
   hardware:
     - GPU with NVDEC support (Jetson or desktop NVIDIA)
@@ -231,10 +227,6 @@ command: pixi run main        # pixi task wraps: python main.py
 
 capabilities:
   - sensor
-
-publishes:
-  - suffix: system-telemetry/metrics
-    description: "CPU, memory, disk, network, load average"
 ```
 
 ### Topic Naming Convention

@@ -9,10 +9,6 @@ command: pixi run main
 capabilities:
   - processor
 
-publishes:
-  - suffix: "{name}/description"
-    description: Scene description text from Qwen2.5-VL vision model
-
 requires:
   hardware:
     - NVIDIA GPU with CUDA support (Jetson or desktop)
