@@ -9,16 +9,9 @@ command: pixi run main
 capabilities:
   - processor
 
-subscribes:
-  - suffix: "{name}/raw"
-    description: Raw RGBA frames from an rtsp-camera node (SHM, local)
-    encoding: application/protobuf
-
 publishes:
   - suffix: "{name}/detections"
     description: YOLO11 object detections with bounding boxes and confidence scores
-    encoding: application/json
-    rate_hz: 1.0
 
 requires:
   hardware:

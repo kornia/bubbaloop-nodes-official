@@ -12,8 +12,6 @@ capabilities:
 publishes:
   - suffix: system-telemetry/metrics
     description: "System metrics — CPU, memory, disk, network I/O, load average"
-    encoding: application/json
-    rate_hz: 1.0
 
 commands:
   - name: set_rate

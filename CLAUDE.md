@@ -187,7 +187,7 @@ bubbaloop node init <name> -t python -d "Description" -o ./<name>
 ### Node Structure Requirements
 
 Every node directory MUST contain:
-- `node.yaml` — **rich manifest** (name, version, type, description, author, build, command, **capabilities**, **publishes**, **subscribes**, **commands**, **requires**)
+- `node.yaml` — **manifest** (name, version, type, description, author, build, command, **capabilities**, **publishes**, **commands**, **requires**)
 - Instance config file (e.g., `config.yaml`) — runtime parameters, passed to binary via `-c`
 - `pixi.toml` — build/run tasks and environment
 
@@ -211,8 +211,6 @@ capabilities:
 publishes:
   - suffix: camera/{name}/compressed
     description: H264-compressed frames
-    encoding: application/protobuf
-    rate_hz: 10.0
 
 requires:
   hardware:
@@ -237,8 +235,6 @@ capabilities:
 publishes:
   - suffix: system-telemetry/metrics
     description: "CPU, memory, disk, network, load average"
-    encoding: application/json
-    rate_hz: 1.0
 ```
 
 ### Topic Naming Convention
@@ -418,7 +414,6 @@ Before submitting a new node, verify ALL items:
 - [ ] `command:` is a **flat string** (e.g., `command: pixi run main`) — NOT a nested map
 - [ ] `capabilities:` only contains `sensor`, `actuator`, `processor`, or `gateway`
 - [ ] `build:` is a flat string or absent (Python nodes don't need it)
-- [ ] `publishes[].encoding` is `application/json` or `application/protobuf`
 
 ### Config file
 - [ ] Has a `name` field (used for per-instance health/schema topics)

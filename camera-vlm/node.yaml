@@ -9,16 +9,9 @@ command: pixi run main
 capabilities:
   - processor
 
-subscribes:
-  - suffix: "{name}/raw"
-    description: Raw RGBA frames from an rtsp-camera node (SHM, local)
-    encoding: application/protobuf
-
 publishes:
   - suffix: "{name}/description"
     description: Scene description text from Qwen2.5-VL vision model
-    encoding: application/json
-    rate_hz: 0.1
 
 requires:
   hardware:

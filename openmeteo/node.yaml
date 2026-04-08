@@ -12,18 +12,12 @@ capabilities:
 publishes:
   - suffix: weather/current
     description: "Current weather conditions — temperature, humidity, wind, precipitation, pressure"
-    encoding: application/json
-    rate_hz: 0.033
 
   - suffix: weather/hourly
     description: "Hourly weather forecast (48 hours by default)"
-    encoding: application/json
-    rate_hz: 0.00056
 
   - suffix: weather/daily
     description: "Daily weather forecast (7 days by default)"
-    encoding: application/json
-    rate_hz: 0.00009
 
 commands:
   - name: set_location

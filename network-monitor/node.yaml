@@ -12,8 +12,6 @@ capabilities:
 publishes:
   - suffix: network-monitor/status
     description: "Network connectivity status (HTTP, DNS, ping latency and health)"
-    encoding: application/json
-    rate_hz: 0.1
 
 commands:
   - name: set_interval

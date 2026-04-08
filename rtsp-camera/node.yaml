@@ -12,8 +12,6 @@ capabilities:
 publishes:
   - suffix: camera/{name}/compressed
     description: "H264 compressed video frames from RTSP stream"
-    encoding: application/protobuf
-    rate_hz: 30.0
 
 commands:
   - name: set_framerate
