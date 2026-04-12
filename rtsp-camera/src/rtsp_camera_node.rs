@@ -1,3 +1,4 @@
+use crate::cbor_wire::{CompressedImageCborRef, HeaderCbor};
 use crate::config::Config;
 use crate::h264_capture::{H264Frame, H264StreamCapture};
 use crate::proto::{CompressedImage, RawImage};
@@ -8,7 +9,7 @@ use bubbaloop_node::zenoh::shm::{
     BlockOn, GarbageCollect, OwnedShmBuf, PosixShmProviderBackend, ShmProviderBuilder,
 };
 use bubbaloop_node::zenoh::Wait;
-use bubbaloop_node::RawPublisher;
+use bubbaloop_node::{CborPublisherShm, RawPublisher};
 use prost::Message;
 use std::sync::Arc;
 
@@ -118,6 +119,12 @@ impl bubbaloop_node::Node for RtspCameraNode {
         let compressed_pub: ProtoPublisher<CompressedImage> =
             ctx.publisher_proto(&compressed_suffix).await?;
 
+        // CBOR SHM publisher: H264 frames serialized as CBOR directly into
+        // shared-memory slots. 512 KB slots fit observed keyframes (~236 KB).
+        let cbor_suffix = format!("{key}/compressed_cbor");
+        let cbor_pub: CborPublisherShm =
+            ctx.publisher_cbor_shm(&cbor_suffix, 4, 512 * 1024).await?;
+
         // SHM + protobuf encoding: subscribers auto-decode RawImage by encoding header.
         // Local topic + CongestionControl::Block for SHM backpressure.
         let raw_pub: RawPublisher = ctx.publisher_raw_proto::<RawImage>(&raw_suffix).await?;
@@ -137,9 +144,10 @@ impl bubbaloop_node::Node for RtspCameraNode {
             .map_err(|e| bubbaloop_node::NodeError::Decode(format!("SHM layout: {e:?}")))?;
 
         log::info!(
-            "[{}] compressed → {} | raw (SHM {}×{}) → {}",
+            "[{}] compressed → {} | compressed_cbor → {} | raw (SHM {}×{}) → {}",
             camera_name,
             ctx.topic(&compressed_suffix),
+            ctx.local_topic(&cbor_suffix),
             raw_width,
             raw_height,
             ctx.local_topic(&raw_suffix),
@@ -160,8 +168,11 @@ impl bubbaloop_node::Node for RtspCameraNode {
 
         let mut shutdown_rx = ctx.shutdown_rx.clone();
         let mut published: u64 = 0;
+        let mut cbor_published: u64 = 0;
         let mut raw_published: u64 = 0;
         let mut dropped: u64 = 0;
+        let mut total_pb_bytes: u64 = 0;
+        let mut total_cbor_encode_ns: u64 = 0;
         let mut last_log = std::time::Instant::now();
         let mut last_published_count: u64 = 0;
         let mut next_frame_time = std::time::Instant::now();
@@ -200,11 +211,48 @@ impl bubbaloop_node::Node for RtspCameraNode {
                                     h264_frame.len(), h264_frame.keyframe, nal_types
                                 );
                             }
+
+                            // CBOR parallel path: serialize BEFORE moving the frame into
+                            // the proto helper. Borrow the H264 slice directly so the
+                            // encoder has no intermediate copy — only the final write
+                            // into the output buffer allocates.
+                            let h264_pts = h264_frame.pts;
+                            let h264_seq = h264_frame.sequence;
+                            let h264_slice = h264_frame.as_slice();
+                            let header_cbor = HeaderCbor {
+                                acq_time: h264_pts,
+                                pub_time: get_pub_time(),
+                                sequence: h264_seq,
+                                frame_id: camera_name.clone(),
+                                machine_id: ctx.machine_id.clone(),
+                            };
+                            let cbor_msg = CompressedImageCborRef {
+                                header: &header_cbor,
+                                format: "h264",
+                                data: h264_slice,
+                            };
+                            let enc_t0 = std::time::Instant::now();
+                            match cbor_pub.put(&cbor_msg).await {
+                                Ok(()) => {
+                                    total_cbor_encode_ns +=
+                                        enc_t0.elapsed().as_nanos() as u64;
+                                    cbor_published += 1;
+                                }
+                                Err(e) => {
+                                    if cbor_published == 0 {
+                                        log::warn!("[{}] CBOR SHM put failed: {}", camera_name, e);
+                                    }
+                                }
+                            }
+
+                            // Existing protobuf path (unchanged).
                             let msg = frame_to_compressed_image(
                                 h264_frame,
                                 &camera_name,
                                 &ctx.machine_id,
                             );
+                            let pb_bytes = msg.encoded_len() as u64;
+                            total_pb_bytes += pb_bytes;
                             if compressed_pub.put(&msg).await.is_ok() {
                                 published += 1;
                             }
@@ -213,9 +261,22 @@ impl bubbaloop_node::Node for RtspCameraNode {
                             if elapsed.as_secs() >= 1 {
                                 let frames_this_period = published - last_published_count;
                                 let fps = frames_this_period as f64 / elapsed.as_secs_f64();
+                                let pb_avg = if published > 0 {
+                                    total_pb_bytes / published
+                                } else {
+                                    0
+                                };
+                                let cbor_enc_us_avg = if cbor_published > 0 {
+                                    (total_cbor_encode_ns / cbor_published) / 1000
+                                } else {
+                                    0
+                                };
                                 log::info!(
-                                    "[{}] seq={}, compressed={}, raw={}, fps={:.1}, dropped={}",
-                                    camera_name, sequence, published, raw_published, fps, dropped
+                                    "[{}] seq={}, pb={} cbor={} raw={} fps={:.1} dropped={} \
+                                     | pb_avg={}B cbor_enc≈{}µs",
+                                    camera_name, sequence, published, cbor_published,
+                                    raw_published, fps, dropped,
+                                    pb_avg, cbor_enc_us_avg
                                 );
                                 last_published_count = published;
                                 last_log = std::time::Instant::now();
