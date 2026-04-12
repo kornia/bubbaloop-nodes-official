@@ -1,15 +1,14 @@
 use crate::cbor_wire::{CompressedImageCborRef, HeaderCbor};
 use crate::config::Config;
-use crate::h264_capture::{H264Frame, H264StreamCapture};
-use crate::proto::{CompressedImage, RawImage};
-use bubbaloop_node::publisher::ProtoPublisher;
+use crate::h264_capture::H264StreamCapture;
+use crate::proto::RawImage;
 use bubbaloop_node::schemas::Header;
 use bubbaloop_node::zenoh::bytes::ZBytes;
 use bubbaloop_node::zenoh::shm::{
     BlockOn, GarbageCollect, OwnedShmBuf, PosixShmProviderBackend, ShmProviderBuilder,
 };
 use bubbaloop_node::zenoh::Wait;
-use bubbaloop_node::{CborPublisherShm, RawPublisher};
+use bubbaloop_node::{CborPublisher, RawPublisher};
 use prost::Message;
 use std::sync::Arc;
 
@@ -38,28 +37,9 @@ fn get_pub_time() -> u64 {
         .unwrap_or(0)
 }
 
-fn frame_to_compressed_image(
-    frame: H264Frame,
-    camera_name: &str,
-    machine_id: &str,
-) -> CompressedImage {
-    CompressedImage {
-        header: Some(Header {
-            acq_time: frame.pts,
-            pub_time: get_pub_time(),
-            sequence: frame.sequence,
-            frame_id: camera_name.to_string(),
-            machine_id: machine_id.to_string(),
-        }),
-        format: "h264".to_string(),
-        data: frame.as_slice().into(),
-    }
-}
-
 /// RTSP Camera node — captures a single H264 RTSP stream and publishes:
-///   - `{key}/compressed`: H264 byte-stream (Annex-B, `CompressedImage` protobuf)
+///   - `{key}/compressed`: H264 byte-stream as CBOR (`APPLICATION_CBOR`)
 ///   - `{key}/raw`: RGBA frames as `RawImage` protobuf over Zenoh SHM.
-///     Encoding = "rgba8", step = width * 4. Transport is SHM for low latency.
 pub struct RtspCameraNode {
     config: Config,
 }
@@ -75,8 +55,6 @@ impl bubbaloop_node::Node for RtspCameraNode {
     fn descriptor() -> &'static [u8] {
         include_bytes!(concat!(env!("OUT_DIR"), "/descriptor.bin"))
     }
-
-
 
     async fn init(
         _ctx: &bubbaloop_node::NodeContext,
@@ -115,23 +93,13 @@ impl bubbaloop_node::Node for RtspCameraNode {
             self.config.hw_accel,
         );
 
-        // Compressed topic: protobuf publisher (existing path, unchanged)
-        let compressed_pub: ProtoPublisher<CompressedImage> =
-            ctx.publisher_proto(&compressed_suffix).await?;
+        // Compressed H264 frames as CBOR on the global topic (dashboard-visible).
+        let compressed_pub: CborPublisher =
+            ctx.publisher_cbor(&compressed_suffix).await?;
 
-        // CBOR SHM publisher: H264 frames serialized as CBOR directly into
-        // shared-memory slots. 512 KB slots fit observed keyframes (~236 KB).
-        let cbor_suffix = format!("{key}/compressed_cbor");
-        let cbor_pub: CborPublisherShm =
-            ctx.publisher_cbor_shm(&cbor_suffix, 4, 512 * 1024).await?;
-
-        // SHM + protobuf encoding: subscribers auto-decode RawImage by encoding header.
-        // Local topic + CongestionControl::Block for SHM backpressure.
+        // SHM + protobuf encoding for RGBA raw frames (local, same-machine only).
         let raw_pub: RawPublisher = ctx.publisher_raw_proto::<RawImage>(&raw_suffix).await?;
 
-        // SHM pool: each slot holds a serialized RawImage proto.
-        // Proto overhead over raw pixels is ~128 bytes (header + field tags/lengths).
-        // 4 slots gives BlockOn<GarbageCollect> room to reclaim consumed buffers.
         let proto_overhead = 128usize;
         let shm_slot_size = frame_size + proto_overhead;
         let shm_pool_size = shm_slot_size * 4;
@@ -144,10 +112,9 @@ impl bubbaloop_node::Node for RtspCameraNode {
             .map_err(|e| bubbaloop_node::NodeError::Decode(format!("SHM layout: {e:?}")))?;
 
         log::info!(
-            "[{}] compressed → {} | compressed_cbor → {} | raw (SHM {}×{}) → {}",
+            "[{}] compressed (CBOR) → {} | raw (SHM {}×{}) → {}",
             camera_name,
             ctx.topic(&compressed_suffix),
-            ctx.local_topic(&cbor_suffix),
             raw_width,
             raw_height,
             ctx.local_topic(&raw_suffix),
@@ -168,11 +135,9 @@ impl bubbaloop_node::Node for RtspCameraNode {
 
         let mut shutdown_rx = ctx.shutdown_rx.clone();
         let mut published: u64 = 0;
-        let mut cbor_published: u64 = 0;
         let mut raw_published: u64 = 0;
         let mut dropped: u64 = 0;
-        let mut total_pb_bytes: u64 = 0;
-        let mut total_cbor_encode_ns: u64 = 0;
+        let mut total_encode_ns: u64 = 0;
         let mut last_log = std::time::Instant::now();
         let mut last_published_count: u64 = 0;
         let mut next_frame_time = std::time::Instant::now();
@@ -212,71 +177,45 @@ impl bubbaloop_node::Node for RtspCameraNode {
                                 );
                             }
 
-                            // CBOR parallel path: serialize BEFORE moving the frame into
-                            // the proto helper. Borrow the H264 slice directly so the
-                            // encoder has no intermediate copy — only the final write
-                            // into the output buffer allocates.
-                            let h264_pts = h264_frame.pts;
-                            let h264_seq = h264_frame.sequence;
-                            let h264_slice = h264_frame.as_slice();
-                            let header_cbor = HeaderCbor {
-                                acq_time: h264_pts,
-                                pub_time: get_pub_time(),
-                                sequence: h264_seq,
-                                frame_id: camera_name.clone(),
-                                machine_id: ctx.machine_id.clone(),
-                            };
                             let cbor_msg = CompressedImageCborRef {
-                                header: &header_cbor,
+                                header: &HeaderCbor {
+                                    acq_time: h264_frame.pts,
+                                    pub_time: get_pub_time(),
+                                    sequence: h264_frame.sequence,
+                                    frame_id: camera_name.clone(),
+                                    machine_id: ctx.machine_id.clone(),
+                                },
                                 format: "h264",
-                                data: h264_slice,
+                                data: h264_frame.as_slice(),
                             };
+
                             let enc_t0 = std::time::Instant::now();
-                            match cbor_pub.put(&cbor_msg).await {
+                            match compressed_pub.put(&cbor_msg).await {
                                 Ok(()) => {
-                                    total_cbor_encode_ns +=
-                                        enc_t0.elapsed().as_nanos() as u64;
-                                    cbor_published += 1;
+                                    total_encode_ns += enc_t0.elapsed().as_nanos() as u64;
+                                    published += 1;
                                 }
                                 Err(e) => {
-                                    if cbor_published == 0 {
-                                        log::warn!("[{}] CBOR SHM put failed: {}", camera_name, e);
+                                    if published == 0 {
+                                        log::warn!("[{}] CBOR put failed: {}", camera_name, e);
                                     }
                                 }
-                            }
-
-                            // Existing protobuf path (unchanged).
-                            let msg = frame_to_compressed_image(
-                                h264_frame,
-                                &camera_name,
-                                &ctx.machine_id,
-                            );
-                            let pb_bytes = msg.encoded_len() as u64;
-                            total_pb_bytes += pb_bytes;
-                            if compressed_pub.put(&msg).await.is_ok() {
-                                published += 1;
                             }
 
                             let elapsed = last_log.elapsed();
                             if elapsed.as_secs() >= 1 {
                                 let frames_this_period = published - last_published_count;
                                 let fps = frames_this_period as f64 / elapsed.as_secs_f64();
-                                let pb_avg = if published > 0 {
-                                    total_pb_bytes / published
-                                } else {
-                                    0
-                                };
-                                let cbor_enc_us_avg = if cbor_published > 0 {
-                                    (total_cbor_encode_ns / cbor_published) / 1000
+                                let enc_us_avg = if published > 0 {
+                                    (total_encode_ns / published) / 1000
                                 } else {
                                     0
                                 };
                                 log::info!(
-                                    "[{}] seq={}, pb={} cbor={} raw={} fps={:.1} dropped={} \
-                                     | pb_avg={}B cbor_enc≈{}µs",
-                                    camera_name, sequence, published, cbor_published,
-                                    raw_published, fps, dropped,
-                                    pb_avg, cbor_enc_us_avg
+                                    "[{}] seq={}, published={} raw={} fps={:.1} dropped={} \
+                                     cbor_enc≈{}µs",
+                                    camera_name, sequence, published,
+                                    raw_published, fps, dropped, enc_us_avg
                                 );
                                 last_published_count = published;
                                 last_log = std::time::Instant::now();
@@ -289,7 +228,6 @@ impl bubbaloop_node::Node for RtspCameraNode {
                 result = capture.rgba_receiver().recv_async() => {
                     match result {
                         Ok(rgba_frame) => {
-                            // Serialize RawImage proto into SHM buffer and publish.
                             let msg = RawImage {
                                 header: Some(Header {
                                     acq_time: rgba_frame.pts,
@@ -309,8 +247,6 @@ impl bubbaloop_node::Node for RtspCameraNode {
                                 Ok(mut sbuf) => {
                                     msg.encode(&mut &mut sbuf[..encoded_len])
                                         .expect("SHM slot large enough");
-                                    // Truncate SHM buffer to actual proto size — trailing
-                                    // zeros from the oversized slot break protobuf parsing.
                                     if sbuf.try_resize(std::num::NonZeroUsize::new(encoded_len).unwrap()).is_none() {
                                         log::warn!("[{}] SHM try_resize failed, proto may have trailing zeros", camera_name);
                                     }
