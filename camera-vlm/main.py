@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """camera-vlm — Scene description on camera raw frames via Zenoh SHM.
 
-Subscribes to `{key}/raw` (RawImage protobuf, encoding="rgba8", over Zenoh SHM
+Subscribes to `{key}/raw` (CBOR RawImage, encoding="rgba8", over Zenoh SHM
 published by the rtsp-camera node) and publishes JSON scene descriptions to
 `{key}/description`.
 
@@ -148,7 +148,7 @@ class CameraVlm:
 
     Topic derivation from instance name:
       tapo_terrace_vlm -> topic key: tapo_terrace
-        subscribe:  tapo_terrace/raw            (RawImage proto, RGBA, SHM)
+        subscribe:  tapo_terrace/raw            (CBOR, RGBA, SHM)
         publish:    tapo_terrace/description    (JSON)
     """
 
@@ -186,11 +186,13 @@ class CameraVlm:
         sub = ctx.subscribe(f"{self._topic_key}/raw", local=True)
 
         def _receive_loop() -> None:
-            for msg in sub:
+            for env in sub:
+                # SDK >=Apr2026 wraps CBOR payloads in a {header, body} Envelope.
+                msg = getattr(env, "body", env)
                 w, h = msg.width, msg.height
                 rgba = np.frombuffer(msg.data, dtype=np.uint8).reshape(h, w, 4)
                 pil_image = Image.fromarray(rgba[:, :, :3], mode="RGB")
-                del rgba, msg
+                del rgba, msg, env
 
                 with self._frame_lock:
                     self._latest_frame = pil_image

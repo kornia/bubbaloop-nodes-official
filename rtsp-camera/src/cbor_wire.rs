@@ -24,3 +24,19 @@ pub struct CompressedImageCborOwned {
     #[serde(with = "serde_bytes")]
     pub data: Vec<u8>,
 }
+
+#[derive(Debug, Serialize)]
+pub struct RawImageCborRef<'a> {
+    pub header: &'a HeaderCbor,
+    pub width: u32,
+    pub height: u32,
+    pub encoding: &'a str,
+    pub step: u32,
+    #[serde(with = "serde_bytes")]
+    pub data: &'a [u8],
+}
+
+impl RawImageCborRef<'_> {
+    /// Upper bound for CBOR-encoded header/metadata bytes on top of pixel data.
+    pub const HEADER_OVERHEAD_BYTES: usize = 256;
+}

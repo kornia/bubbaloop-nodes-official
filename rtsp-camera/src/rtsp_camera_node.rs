@@ -1,16 +1,22 @@
-use crate::cbor_wire::{CompressedImageCborRef, HeaderCbor};
+use crate::cbor_wire::{CompressedImageCborRef, HeaderCbor, RawImageCborRef};
 use crate::config::Config;
 use crate::h264_capture::H264StreamCapture;
-use crate::proto::RawImage;
-use bubbaloop_node::schemas::Header;
-use bubbaloop_node::zenoh::bytes::ZBytes;
-use bubbaloop_node::zenoh::shm::{
-    BlockOn, GarbageCollect, OwnedShmBuf, PosixShmProviderBackend, ShmProviderBuilder,
-};
-use bubbaloop_node::zenoh::Wait;
-use bubbaloop_node::{CborPublisher, RawPublisher};
-use prost::Message;
+use bubbaloop_node::{CborPublisher, CborPublisherShm, NodeContext};
 use std::sync::Arc;
+
+fn make_header(ctx: &NodeContext, camera_name: &str, acq_time: u64, sequence: u32) -> HeaderCbor {
+    let pub_time = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos() as u64)
+        .unwrap_or(0);
+    HeaderCbor {
+        acq_time,
+        pub_time,
+        sequence,
+        frame_id: camera_name.to_owned(),
+        machine_id: ctx.machine_id.clone(),
+    }
+}
 
 /// Extract NAL unit types from an H264 byte-stream (Annex B format).
 fn extract_nal_types(data: &[u8]) -> Vec<u8> {
@@ -30,16 +36,6 @@ fn extract_nal_types(data: &[u8]) -> Vec<u8> {
     nal_types
 }
 
-fn get_pub_time() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_nanos() as u64)
-        .unwrap_or(0)
-}
-
-/// RTSP Camera node — captures a single H264 RTSP stream and publishes:
-///   - `{key}/compressed`: H264 byte-stream as CBOR (`APPLICATION_CBOR`)
-///   - `{key}/raw`: RGBA frames as `RawImage` protobuf over Zenoh SHM.
 pub struct RtspCameraNode {
     config: Config,
 }
@@ -50,10 +46,6 @@ impl bubbaloop_node::Node for RtspCameraNode {
 
     fn name() -> &'static str {
         "rtsp-camera"
-    }
-
-    fn descriptor() -> &'static [u8] {
-        include_bytes!(concat!(env!("OUT_DIR"), "/descriptor.bin"))
     }
 
     async fn init(
@@ -67,9 +59,8 @@ impl bubbaloop_node::Node for RtspCameraNode {
 
     async fn run(self, ctx: bubbaloop_node::NodeContext) -> anyhow::Result<()> {
         let camera_name = self.config.name.clone();
-        let key = self.config.topic_key().to_string();
-        let compressed_suffix = format!("{key}/compressed");
-        let raw_suffix = format!("{key}/raw");
+        let compressed_suffix = "compressed";
+        let raw_suffix = "raw";
         let raw_width = self.config.raw_width;
         let raw_height = self.config.raw_height;
         let frame_size = (raw_width * raw_height * 4) as usize;
@@ -93,31 +84,21 @@ impl bubbaloop_node::Node for RtspCameraNode {
             self.config.hw_accel,
         );
 
-        // Compressed H264 frames as CBOR on the global topic (dashboard-visible).
         let compressed_pub: CborPublisher =
-            ctx.publisher_cbor(&compressed_suffix).await?;
+            ctx.publisher_cbor(compressed_suffix).await?;
 
-        // SHM + protobuf encoding for RGBA raw frames (local, same-machine only).
-        let raw_pub: RawPublisher = ctx.publisher_raw_proto::<RawImage>(&raw_suffix).await?;
-
-        let proto_overhead = 128usize;
-        let shm_slot_size = frame_size + proto_overhead;
-        let shm_pool_size = shm_slot_size * 4;
-        let shm_backend = PosixShmProviderBackend::builder(shm_pool_size)
-            .wait()
-            .map_err(|e| bubbaloop_node::NodeError::Decode(format!("SHM backend: {e:?}")))?;
-        let shm_provider = ShmProviderBuilder::backend(shm_backend).wait();
-        let shm_layout = shm_provider
-            .alloc_layout(shm_slot_size)
-            .map_err(|e| bubbaloop_node::NodeError::Decode(format!("SHM layout: {e:?}")))?;
+        let raw_slot_size = frame_size + RawImageCborRef::HEADER_OVERHEAD_BYTES;
+        let raw_pub: CborPublisherShm =
+            ctx.publisher_cbor_shm(raw_suffix, 4, raw_slot_size).await?;
 
         log::info!(
-            "[{}] compressed (CBOR) → {} | raw (SHM {}×{}) → {}",
+            "[{}] compressed (CBOR) → {} | raw (CBOR SHM {}×{}, slot={}B) → {}",
             camera_name,
-            ctx.topic(&compressed_suffix),
+            ctx.topic(compressed_suffix),
             raw_width,
             raw_height,
-            ctx.local_topic(&raw_suffix),
+            raw_slot_size,
+            ctx.local_topic(raw_suffix),
         );
 
         let frame_interval = self.config.frame_rate.map(|fps| {
@@ -177,29 +158,21 @@ impl bubbaloop_node::Node for RtspCameraNode {
                                 );
                             }
 
+                            let header = make_header(&ctx, &camera_name, h264_frame.pts, h264_frame.sequence);
                             let cbor_msg = CompressedImageCborRef {
-                                header: &HeaderCbor {
-                                    acq_time: h264_frame.pts,
-                                    pub_time: get_pub_time(),
-                                    sequence: h264_frame.sequence,
-                                    frame_id: camera_name.clone(),
-                                    machine_id: ctx.machine_id.clone(),
-                                },
+                                header: &header,
                                 format: "h264",
                                 data: h264_frame.as_slice(),
                             };
 
                             let enc_t0 = std::time::Instant::now();
-                            match compressed_pub.put(&cbor_msg).await {
-                                Ok(()) => {
-                                    total_encode_ns += enc_t0.elapsed().as_nanos() as u64;
-                                    published += 1;
+                            if let Err(e) = compressed_pub.put(&cbor_msg).await {
+                                if published == 0 {
+                                    log::warn!("[{}] CBOR put failed: {}", camera_name, e);
                                 }
-                                Err(e) => {
-                                    if published == 0 {
-                                        log::warn!("[{}] CBOR put failed: {}", camera_name, e);
-                                    }
-                                }
+                            } else {
+                                total_encode_ns += enc_t0.elapsed().as_nanos() as u64;
+                                published += 1;
                             }
 
                             let elapsed = last_log.elapsed();
@@ -228,35 +201,21 @@ impl bubbaloop_node::Node for RtspCameraNode {
                 result = capture.rgba_receiver().recv_async() => {
                     match result {
                         Ok(rgba_frame) => {
-                            let msg = RawImage {
-                                header: Some(Header {
-                                    acq_time: rgba_frame.pts,
-                                    pub_time: get_pub_time(),
-                                    sequence: rgba_frame.sequence,
-                                    frame_id: camera_name.clone(),
-                                    machine_id: ctx.machine_id.clone(),
-                                }),
+                            let header = make_header(&ctx, &camera_name, rgba_frame.pts, rgba_frame.sequence);
+                            let raw_msg = RawImageCborRef {
+                                header: &header,
                                 width: raw_width,
                                 height: raw_height,
-                                encoding: "rgba8".to_string(),
+                                encoding: "rgba8",
                                 step: raw_width * 4,
-                                data: rgba_frame.data,
+                                data: &rgba_frame.data,
                             };
-                            let encoded_len = msg.encoded_len();
-                            match shm_layout.alloc().with_policy::<BlockOn<GarbageCollect>>().await {
-                                Ok(mut sbuf) => {
-                                    msg.encode(&mut &mut sbuf[..encoded_len])
-                                        .expect("SHM slot large enough");
-                                    if sbuf.try_resize(std::num::NonZeroUsize::new(encoded_len).unwrap()).is_none() {
-                                        log::warn!("[{}] SHM try_resize failed, proto may have trailing zeros", camera_name);
-                                    }
-                                    if raw_pub.put(ZBytes::from(sbuf)).await.is_ok() {
-                                        raw_published += 1;
-                                    }
+                            if let Err(e) = raw_pub.put(&raw_msg).await {
+                                if raw_published == 0 {
+                                    log::warn!("[{}] Raw CBOR SHM put failed: {}", camera_name, e);
                                 }
-                                Err(e) => {
-                                    log::warn!("[{}] SHM alloc failed: {:?}", camera_name, e);
-                                }
+                            } else {
+                                raw_published += 1;
                             }
                         }
                         Err(_) => break,

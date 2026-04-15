@@ -18,27 +18,11 @@ serde = { version = "1.0", features = ["derive"] }
 serde_bytes = "0.11"
 serde_yaml = "0.9"
 thiserror = "2.0"
-prost = "0.14"
 ciborium = "0.2"
-
-[build-dependencies]
-bubbaloop-node-build = { git = "https://github.com/kornia/bubbaloop.git", branch = "main" }
 
 [[bin]]
 name = "rtsp_camera_node"
 path = "src/main.rs"
-
-[[bin]]
-name = "cbor_subscriber"
-path = "src/bin/cbor_subscriber.rs"
-
-[[bin]]
-name = "shm_roundtrip_test"
-path = "src/bin/shm_roundtrip_test.rs"
-
-[[bin]]
-name = "shm_pub_continuous"
-path = "src/bin/shm_pub_continuous.rs"
 
 [workspace]
 
@@ -62,4 +46,3 @@ path = "src/bin/shm_pub_continuous.rs"
 # `bubbaloop-node` git dep pulls in the new default.
 [patch."https://github.com/kornia/bubbaloop.git"]
 bubbaloop-node = { path = "/home/nvidia/bubbaloop/crates/bubbaloop-node" }
-bubbaloop-node-build = { path = "/home/nvidia/bubbaloop/crates/bubbaloop-node-build" }
