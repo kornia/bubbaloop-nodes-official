@@ -142,13 +142,8 @@ class CameraObjectDetector:
     def __init__(self, ctx, config: dict) -> None:
         self._ctx = ctx
         self._target_fps = config["target_fps"]
-
-        # Derive topic key: strip "_detector" suffix from instance name
-        instance_name = config["name"]
-        topic_key = instance_name.removesuffix("_detector")
-
-        self._topic_key = topic_key
-        self._pub = ctx.publisher_json(f"{topic_key}/detections")
+        self._input_topic = config["input_topic"]
+        self._pub = ctx.publisher_json("detections")
         self._device = config["device"]
         self._detector = Detector(
             confidence_threshold=config["confidence_threshold"],
@@ -156,21 +151,20 @@ class CameraObjectDetector:
             device=self._device,
         )
 
-        # Latest decoded frame slot — written by subscriber callback, read by inference loop
         self._latest_frame: "torch.Tensor | None" = None
         self._frame_lock = threading.Lock()
         self._seq = 0
 
         log.info(
-            "Subscribing to %s/raw (CBOR SHM), publishing to %s at %.1f fps",
-            topic_key,
-            ctx.topic(f"{topic_key}/detections"),
+            "Subscribing to %s (CBOR SHM), publishing to %s at %.1f fps",
+            self._input_topic,
+            ctx.topic("detections"),
             self._target_fps,
         )
 
     def run(self) -> None:
         ctx = self._ctx
-        sub = ctx.subscribe(f"{self._topic_key}/raw", local=True)
+        sub = ctx.subscribe(self._input_topic, local=True)
 
         def _receive_loop() -> None:
             # Buffers are allocated on the first frame using dimensions from the

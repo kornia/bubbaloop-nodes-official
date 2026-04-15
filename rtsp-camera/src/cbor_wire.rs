@@ -38,5 +38,7 @@ pub struct RawImageCborRef<'a> {
 
 impl RawImageCborRef<'_> {
     /// Upper bound for CBOR-encoded header/metadata bytes on top of pixel data.
-    pub const HEADER_OVERHEAD_BYTES: usize = 256;
+    /// Covers the inner `HeaderCbor` plus the SDK `Envelope` wrapper (schema_uri,
+    /// source_instance, ts_ns, monotonic_seq) that wraps the published body.
+    pub const HEADER_OVERHEAD_BYTES: usize = 1024;
 }
