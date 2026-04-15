@@ -187,7 +187,7 @@ class CameraVlm:
 
         def _receive_loop() -> None:
             for env in sub:
-                # SDK >=Apr2026 wraps CBOR payloads in a {header, body} Envelope.
+                # CBOR payloads arrive wrapped in a {header, body} Envelope.
                 msg = getattr(env, "body", env)
                 w, h = msg.width, msg.height
                 rgba = np.frombuffer(msg.data, dtype=np.uint8).reshape(h, w, 4)
