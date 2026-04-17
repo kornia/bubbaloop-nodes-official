@@ -1,0 +1,12 @@
+name: oak_primary
+role: source
+
+width: 1280
+height: 720
+fps: 30
+
+jpeg_every_n: 3
+jpeg_quality: 80
+
+enable_depth: true
+max_depth_mm: 10000
