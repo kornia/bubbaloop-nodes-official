@@ -15,15 +15,34 @@ flume = "0.12"
 gstreamer = "0.24"
 gstreamer-app = "0.24"
 serde = { version = "1.0", features = ["derive"] }
+serde_bytes = "0.11"
 serde_yaml = "0.9"
 thiserror = "2.0"
-prost = "0.14"
-
-[build-dependencies]
-bubbaloop-node-build = { git = "https://github.com/kornia/bubbaloop.git", branch = "main" }
+ciborium = "0.2"
 
 [[bin]]
 name = "rtsp_camera_node"
 path = "src/main.rs"
 
 [workspace]
+
+# TEMPORARY local override for the CBOR/SHM zero-copy camera path.
+#
+# The camera node's CBOR publisher depends on the SDK having
+# `transport/shared_memory/transport_optimization/message_size_threshold = 1`
+# in `zenoh_session.rs` — without it, messages below 3072 B silently fall back
+# to non-SHM transport and the publish-side zero-copy we engineered doesn't
+# engage for small CBOR frames.
+#
+# That SDK change is a 5-line patch to `bubbaloop-node::zenoh_session` that
+# still needs to be upstreamed to `github.com/kornia/bubbaloop` main. Until
+# it lands, anyone cloning this branch MUST either:
+#   (a) have a local checkout at /home/nvidia/bubbaloop with the threshold
+#       patch applied, or
+#   (b) remove this [patch] block and accept that sub-3 KB frames won't
+#       go through SHM.
+#
+# REMOVE THIS BLOCK once the SDK change is merged and the camera repo's
+# `bubbaloop-node` git dep pulls in the new default.
+[patch."https://github.com/kornia/bubbaloop.git"]
+bubbaloop-node = { path = "/home/nvidia/bubbaloop/crates/bubbaloop-node" }

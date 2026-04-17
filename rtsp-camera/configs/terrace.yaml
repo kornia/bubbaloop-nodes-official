@@ -1,4 +1,5 @@
 name: tapo_terrace_camera
+role: source
 url: "rtsp://tapo_terrace:clawd2026@192.168.1.151:554/stream1"
 latency: 50
 frame_rate: 10

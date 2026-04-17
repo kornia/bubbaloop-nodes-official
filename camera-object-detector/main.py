@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """camera-object-detector — Object detection on camera raw frames via Zenoh SHM.
 
-Subscribes to `{key}/raw` (RawImage protobuf, encoding="rgba8", over Zenoh SHM
+Subscribes to `{key}/raw` (CBOR RawImage, encoding="rgba8", over Zenoh SHM
 published by the rtsp-camera node) and publishes JSON detections to
 `{key}/detections`.
 
@@ -133,7 +133,7 @@ class CameraObjectDetector:
 
     Topic derivation from instance name:
       tapo_terrace_detector → topic key: tapo_terrace
-        subscribe:  tapo_terrace/raw          (RawImage proto, RGBA, SHM)
+        subscribe:  tapo_terrace/raw          (CBOR, RGBA, SHM)
         publish:    tapo_terrace/detections   (JSON)
     """
 
@@ -142,13 +142,8 @@ class CameraObjectDetector:
     def __init__(self, ctx, config: dict) -> None:
         self._ctx = ctx
         self._target_fps = config["target_fps"]
-
-        # Derive topic key: strip "_detector" suffix from instance name
-        instance_name = config["name"]
-        topic_key = instance_name.removesuffix("_detector")
-
-        self._topic_key = topic_key
-        self._pub = ctx.publisher_json(f"{topic_key}/detections")
+        self._input_topic = config["input_topic"]
+        self._pub = ctx.publisher_json("detections")
         self._device = config["device"]
         self._detector = Detector(
             confidence_threshold=config["confidence_threshold"],
@@ -156,25 +151,24 @@ class CameraObjectDetector:
             device=self._device,
         )
 
-        # Latest decoded frame slot — written by subscriber callback, read by inference loop
         self._latest_frame: "torch.Tensor | None" = None
         self._frame_lock = threading.Lock()
         self._seq = 0
 
         log.info(
-            "Subscribing to %s/raw (RawImage proto), publishing to %s at %.1f fps",
-            topic_key,
-            ctx.topic(f"{topic_key}/detections"),
+            "Subscribing to %s (CBOR SHM), publishing to %s at %.1f fps",
+            self._input_topic,
+            ctx.topic("detections"),
             self._target_fps,
         )
 
     def run(self) -> None:
         ctx = self._ctx
-        sub = ctx.subscribe(f"{self._topic_key}/raw", local=True)
+        sub = ctx.subscribe(self._input_topic, local=True)
 
         def _receive_loop() -> None:
             # Buffers are allocated on the first frame using dimensions from the
-            # RawImage proto (msg.width, msg.height).  After that, every frame
+            # CBOR message (msg.width, msg.height).  After that, every frame
             # reuses the same memory — zero per-frame allocs.
             # On Jetson unified memory, uncontrolled CUDA allocs eat system RAM
             # and cause OOM reboots.
@@ -183,7 +177,10 @@ class CameraObjectDetector:
             rgb_np = None
             dev_buf = None
 
-            for msg in sub:
+            for env in sub:
+                # SDK >=Apr2026 wraps CBOR payloads in a {header, body} Envelope.
+                # getattr keeps compatibility with non-enveloped upstreams.
+                msg = getattr(env, "body", env)
                 w, h = msg.width, msg.height
 
                 # First frame (or resolution change): allocate once.

@@ -1,4 +1,5 @@
 name: tapo_terrace_detector
+input_topic: tapo_terrace_camera/raw
 confidence_threshold: 0.5
 model: xlarge
 target_fps: 1.0

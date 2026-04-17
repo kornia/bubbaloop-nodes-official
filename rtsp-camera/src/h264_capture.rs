@@ -96,7 +96,7 @@ impl H264StreamCapture {
              video/x-h264,stream-format=byte-stream,alignment=au ! \
              tee name=t \
              t. ! queue max-size-buffers=2 leaky=downstream ! \
-               appsink name=h264sink emit-signals=true sync=false max-buffers=30 drop=true \
+               appsink name=h264sink emit-signals=true sync=false max-buffers=2 drop=true \
              t. ! queue max-size-buffers=2 leaky=downstream ! \
                {rgba_branch} ! \
                appsink name=rgbasink emit-signals=true sync=false max-buffers=2 drop=true"
@@ -106,9 +106,9 @@ impl H264StreamCapture {
             .dynamic_cast::<gstreamer::Pipeline>()
             .map_err(|_| H264CaptureError::DowncastError)?;
 
-        // Bounded to match appsink max-buffers (30). Prevents unbounded RAM growth
-        // if the Zenoh publisher stalls or the event loop blocks on SHM allocation.
-        let (h264_tx, h264_rx) = flume::bounded::<H264Frame>(30);
+        // Bounded to match appsink max-buffers (2). Keeps end-to-end latency low:
+        // older frames are dropped rather than queued if the Zenoh publisher stalls.
+        let (h264_tx, h264_rx) = flume::bounded::<H264Frame>(2);
         let (rgba_tx, rgba_rx) = flume::bounded::<RgbaFrame>(2);
 
         // Wire H264 appsink
