@@ -26,6 +26,12 @@ import zenoh
 
 log = logging.getLogger("oak-camera")
 
+_DEPTH_OPS = {
+    "median": np.median,
+    "mean": np.mean,
+    "min": np.min,
+}
+
 
 def _validate(cfg: dict) -> dict:
     name = cfg.get("name")
@@ -100,7 +106,10 @@ class OakCameraNode:
         )
         ctx._declare_output(self._raw_key)
         self._raw_seq = 0
-        self._raw_instance = instance
+
+        # Pre-allocated scratch buffer for BGR→RGBA conversion — 1280×720×4 = 3.7 MB.
+        # Avoids ~111 MB/s of per-frame allocations at 30 fps.
+        self._rgba_buf = np.empty((self._cfg["height"], self._cfg["width"], 4), dtype=np.uint8)
 
         # Depth — lazy request/response instead of streaming the full frame.
         self._depth_lock = threading.Lock()
@@ -122,7 +131,8 @@ class OakCameraNode:
             x2 = int(req.get("x2", 0))
             y2 = int(req.get("y2", 0))
             op = str(req.get("op", "median")).lower()
-            if op not in ("median", "mean", "min"):
+            reducer = _DEPTH_OPS.get(op)
+            if reducer is None:
                 raise ValueError(f"unsupported op: {op}")
 
             with self._depth_lock:
@@ -146,14 +156,8 @@ class OakCameraNode:
                     if valid.size == 0:
                         reply = {"error": "no_valid_depth", "total_pixels": total}
                     else:
-                        if op == "median":
-                            depth_mm = int(np.median(valid))
-                        elif op == "mean":
-                            depth_mm = int(np.mean(valid))
-                        else:
-                            depth_mm = int(np.min(valid))
                         reply = {
-                            "depth_mm": depth_mm,
+                            "depth_mm": int(reducer(valid)),
                             "valid_pixels": int(valid.size),
                             "total_pixels": total,
                             "ts_ns": int(ts_ns),
@@ -220,7 +224,6 @@ class OakCameraNode:
             pipeline.start()
             log.info("Pipeline started. Streaming at %.1f fps", cfg["fps"])
 
-            compressed_seq = 0
             while not ctx.is_shutdown():
                 rgb_msg = q_rgb.get()
                 if rgb_msg is None:
@@ -228,10 +231,9 @@ class OakCameraNode:
                 bgr = rgb_msg.getCvFrame()
                 h, w = bgr.shape[:2]
 
-                # Raw RGBA8 on SHM for same-machine consumers.
-                rgba = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGBA)
+                cv2.cvtColor(bgr, cv2.COLOR_BGR2RGBA, dst=self._rgba_buf)
                 envelope = _envelope(
-                    {"width": w, "height": h, "encoding": "rgba8", "data": rgba.tobytes()},
+                    {"width": w, "height": h, "encoding": "rgba8", "data": self._rgba_buf.tobytes()},
                     instance,
                     "raw",
                     self._raw_seq,
@@ -239,7 +241,6 @@ class OakCameraNode:
                 self._raw_pub.put(cbor2.dumps(envelope))
                 self._raw_seq += 1
 
-                # Compressed JPEG throttled to every Nth frame.
                 if self._raw_seq % cfg["jpeg_every_n"] == 0:
                     ok, jpeg = cv2.imencode(
                         ".jpg", bgr, [cv2.IMWRITE_JPEG_QUALITY, cfg["jpeg_quality"]]
@@ -253,19 +254,14 @@ class OakCameraNode:
                                 "data": jpeg.tobytes(),
                             }
                         )
-                        compressed_seq += 1
 
                 if q_depth is not None:
-                    depth_msg = q_depth.tryGet() if hasattr(q_depth, "tryGet") else None
-                    if depth_msg is None:
-                        try:
-                            depth_msg = q_depth.get()
-                        except Exception:
-                            depth_msg = None
+                    # Non-blocking pull: skip this frame's depth update if the queue
+                    # is empty rather than stalling the RGB loop.
+                    depth_msg = q_depth.tryGet()
                     if depth_msg is not None:
-                        depth = depth_msg.getFrame()
                         with self._depth_lock:
-                            self._latest_depth = depth
+                            self._latest_depth = depth_msg.getFrame()
                             self._latest_depth_ts_ns = time.time_ns()
 
             log.info("Shutdown requested — stopping")
