@@ -1,9 +1,8 @@
 name: camera-vlm
-version: 0.1.0
+version: "0.1.0"
 type: python
-description: Scene description using Qwen2.5-VL vision model on camera raw frames via Zenoh SHM
+description: Vision-language model inference on camera frames
 author: Bubbaloop Team
-
 command: pixi run main
 
 capabilities:
@@ -11,8 +10,7 @@ capabilities:
 
 requires:
   hardware:
-    - NVIDIA GPU with CUDA support (Jetson or desktop)
+    - NVIDIA GPU with CUDA support
   software:
     - Python 3.10+
-    - PyTorch with CUDA
-    - HuggingFace transformers
+    - Ollama

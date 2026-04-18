@@ -3,7 +3,6 @@ version: "0.2.0"
 type: python
 description: Network connectivity monitor (HTTP, DNS, ping health checks)
 author: Bubbaloop Team
-
 command: pixi run main
 
 capabilities:
