@@ -11,29 +11,45 @@ nodes:
 
   - name: openmeteo
     description: "Open-Meteo weather data publisher"
-    version: "0.1.0"
-    type: rust
+    version: "0.2.0"
+    type: python
     category: weather
-    tags: [sensor, weather, api, forecast, current, hourly, daily, location-aware]
+    tags: [sensor, weather, api, forecast]
     repo: kornia/bubbaloop-nodes-official
     subdir: openmeteo
-    binary: openmeteo_node
 
   - name: system-telemetry
     description: "System telemetry metrics (CPU, memory, disk, network, load)"
-    version: "0.1.0"
-    type: rust
+    version: "0.2.0"
+    type: python
     category: telemetry
-    tags: [sensor, system, cpu, memory, disk, network, load, uptime, monitoring]
+    tags: [sensor, system, cpu, memory, disk, network, monitoring]
     repo: kornia/bubbaloop-nodes-official
     subdir: system-telemetry
-    binary: system_telemetry_node
 
   - name: network-monitor
     description: "Network connectivity monitor (HTTP, DNS, ping health checks)"
-    version: "0.1.0"
+    version: "0.2.0"
     type: python
     category: monitoring
-    tags: [sensor, network, dns, ping, http, connectivity, health-check, latency]
+    tags: [sensor, network, dns, ping, http, connectivity]
     repo: kornia/bubbaloop-nodes-official
     subdir: network-monitor
+
+  - name: camera-object-detector
+    description: "Object detection using YOLO11 on camera raw frames"
+    version: "0.2.0"
+    type: python
+    category: vision
+    tags: [processor, detection, yolo, gpu]
+    repo: kornia/bubbaloop-nodes-official
+    subdir: camera-object-detector
+
+  - name: camera-vlm
+    description: "Vision-language model inference on camera frames"
+    version: "0.1.0"
+    type: python
+    category: vision
+    tags: [processor, vlm, ollama, gpu]
+    repo: kornia/bubbaloop-nodes-official
+    subdir: camera-vlm

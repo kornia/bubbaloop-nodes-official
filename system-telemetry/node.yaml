@@ -3,7 +3,6 @@ version: "0.2.0"
 type: python
 description: System metrics publisher (CPU, memory, disk, network, load)
 author: Bubbaloop Team
-
 command: pixi run main
 
 capabilities:

@@ -1,9 +1,8 @@
 name: camera-object-detector
-version: 0.2.0
+version: "0.2.0"
 type: python
 description: Object detection using YOLO11 on camera raw frames via Zenoh SHM
 author: Bubbaloop Team
-
 command: pixi run main
 
 capabilities:
