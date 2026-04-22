@@ -1,14 +1,19 @@
 """Unit tests for oak-camera config validation and wire-format helpers."""
 import os
 import sys
+import types
 
 import pytest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
-# Imports from main.py work without the OAK device because _validate,
-# _envelope, and _raw_body are pure functions.
-from main import _envelope, _raw_body, _validate
+# main.py imports depthai/cv2 at module scope for the runtime pipeline. The
+# pure functions we actually test don't touch those libs, so stub them out
+# when they aren't installed (CI image doesn't carry hardware deps).
+for _mod in ("depthai", "cv2", "cbor2"):
+    sys.modules.setdefault(_mod, types.ModuleType(_mod))
+
+from main import _rgbd_body, _validate
 
 
 def test_validate_defaults():
@@ -20,7 +25,6 @@ def test_validate_defaults():
     assert cfg["jpeg_every_n"] == 3
     assert cfg["jpeg_quality"] == 80
     assert cfg["enable_depth"] is True
-    assert cfg["max_depth_mm"] == 10000
 
 
 def test_validate_missing_name():
@@ -58,29 +62,39 @@ def test_validate_jpeg_quality_out_of_range():
         _validate({"name": "oak", "jpeg_quality": 200})
 
 
-def test_validate_max_depth_mm_non_positive():
-    with pytest.raises(ValueError, match="max_depth_mm"):
-        _validate({"name": "oak", "max_depth_mm": 0})
-
-
-def test_envelope_shape():
-    env = _envelope({"width": 1, "height": 2}, "oak_primary", "raw", 7)
-    assert env["header"]["source_instance"] == "oak_primary"
-    assert env["header"]["monotonic_seq"] == 7
-    assert env["header"]["schema_uri"].startswith("bubbaloop://oak_primary/raw")
-    assert env["body"] == {"width": 1, "height": 2}
-
-
-def test_raw_body_matches_rtsp_camera_shape():
-    body = _raw_body(b"\x00\x00\x00\x00", 1, 1, "oak_primary", "host1", 42)
-    assert body["width"] == 1
-    assert body["height"] == 1
-    assert body["encoding"] == "rgba8"
-    assert body["step"] == 4
-    assert body["data"] == b"\x00\x00\x00\x00"
-    # inner HeaderCbor fields (matches rtsp-camera/src/cbor_wire.rs::HeaderCbor)
+def test_rgbd_body_rgb_only():
+    body = _rgbd_body(b"\x00\x00\x00\x00", 1, 1, "oak_primary", "host1", 42)
+    # Inner capture header.
     inner = body["header"]
     assert inner["sequence"] == 42
     assert inner["frame_id"] == "oak_primary"
     assert inner["machine_id"] == "host1"
     assert {"acq_time", "pub_time"} <= inner.keys()
+    # RGB plane.
+    assert body["rgb"] == {
+        "width": 1,
+        "height": 1,
+        "encoding": "rgba8",
+        "step": 4,
+        "data": b"\x00\x00\x00\x00",
+    }
+    # Depth is absent (not None) so consumers can use `"depth" in body`.
+    assert "depth" not in body
+
+
+def test_rgbd_body_with_depth():
+    depth_bytes = b"\x10\x27" * 4  # four uint16 pixels = 10000 mm each
+    body = _rgbd_body(
+        b"\x00" * 16, 2, 2, "oak_primary", "host1", 99,
+        depth=depth_bytes, depth_width=2, depth_height=2,
+    )
+    assert body["rgb"]["encoding"] == "rgba8"
+    assert body["rgb"]["width"] == 2
+    assert body["rgb"]["step"] == 8
+    assert body["depth"] == {
+        "width": 2,
+        "height": 2,
+        "encoding": "depth16_mm",
+        "step": 4,  # 2 pixels * 2 bytes
+        "data": depth_bytes,
+    }

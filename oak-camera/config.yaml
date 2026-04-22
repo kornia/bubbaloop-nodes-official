@@ -8,4 +8,3 @@ jpeg_every_n: 3
 jpeg_quality: 80
 
 enable_depth: true
-max_depth_mm: 10000

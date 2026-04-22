@@ -16,4 +16,5 @@ depthai = ">=3.0"
 opencv-python = ">=4.8"
 numpy = ">=1.24"
 cbor2 = ">=5.5"
-bubbaloop-sdk = { git = "https://github.com/kornia/bubbaloop.git", branch = "main", subdirectory = "python-sdk" }
+# TODO: switch branch back to "main" after SDK PR (feat/python-sdk-cbor-shm) merges.
+bubbaloop-sdk = { git = "https://github.com/kornia/bubbaloop.git", branch = "feat/python-sdk-cbor-shm", subdirectory = "python-sdk" }

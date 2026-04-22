@@ -1,6 +1,9 @@
 # oak-camera
 
-OAK (Luxonis / Movidius MyriadX) camera node for Bubbaloop.
+OAK (Luxonis / Movidius MyriadX) camera node for Bubbaloop. Publishes RGB and
+aligned stereo depth as a single RGBD message so downstream processors can run
+detection on the image and sample depth at the detected bboxes without a second
+round-trip.
 
 ## Topics
 
@@ -9,26 +12,51 @@ Scoped under the `name` from `config.yaml` (default `oak_primary`):
 | Topic | Scope | Encoding | Body |
 |---|---|---|---|
 | `{name}/compressed` | global | CBOR envelope | `{width, height, encoding:"jpeg", data}` |
-| `{name}/raw` | local (SHM) | CBOR envelope | `{width, height, encoding:"rgba8", data}` |
-| `{name}/depth_at_bbox` | global queryable | JSON | request/reply below |
+| `{name}/rgbd` | local (SHM) | CBOR envelope | RGBA + aligned depth16 (see below) |
 
-The `raw` wire shape matches `rtsp-camera`, so `camera-object-detector` can consume it unchanged by pointing `input_topic` at `oak_primary/raw`.
+## Wire envelope
 
-## Depth query
+Every payload is wrapped by the SDK in:
 
-Send JSON over `session.get()`:
-
-```json
-{"x1": 400, "y1": 200, "x2": 700, "y2": 500, "op": "median"}
+```
+{
+  "header": { schema_uri, source_instance, monotonic_seq, ts_ns },
+  "body":   <the dict described below>
+}
 ```
 
-Reply:
+with wire encoding `application/cbor`.
 
-```json
-{"depth_mm": 1834, "valid_pixels": 14221, "total_pixels": 90000, "ts_ns": 1713372000000000000}
+## RGBD body
+
+```
+{
+  "header": { acq_time, pub_time, sequence, frame_id, machine_id },
+  "rgb":   { "width": W, "height": H, "encoding": "rgba8",      "step": W*4, "data": <RGBA bytes> },
+  "depth": { "width": W, "height": H, "encoding": "depth16_mm", "step": W*2, "data": <uint16 LE mm> }   // optional
+}
 ```
 
-`op` ∈ `{"median", "mean", "min"}` (default `"median"`). If the device has no stereo cameras, the queryable is not registered and the topic stays silent.
+RGB and depth planes share the shape `{width, height, encoding, step, data}` — generic code can iterate `for kind in ('rgb', 'depth'): plane = body.get(kind)`.
+
+Depth is aligned to `CAM_A` (RGB) by the OAK's `StereoDepth` node, so pixel
+`(x, y)` in the RGBA buffer maps to the uint16 at offset
+`y * depth["step"] + x * 2` in `depth["data"]`. A value of `0` means "no valid depth
+at this pixel". To sample depth for a bbox `(x1, y1, x2, y2)`, slice the depth
+plane and pick a reducer (median is robust to holes):
+
+```python
+import numpy as np
+depth_plane = body["depth"]
+depth = np.frombuffer(depth_plane["data"], dtype=np.uint16).reshape(
+    depth_plane["height"], depth_plane["width"]
+)
+roi = depth[y1:y2, x1:x2]
+valid = roi[roi > 0]
+depth_mm = int(np.median(valid)) if valid.size else None
+```
+
+If the device has no stereo cameras, the `depth` key is omitted entirely — check `"depth" in body` to branch.
 
 ## Prerequisites
 

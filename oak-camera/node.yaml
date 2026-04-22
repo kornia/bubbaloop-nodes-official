@@ -1,7 +1,7 @@
 name: oak-camera
 version: "0.1.0"
 type: python
-description: OAK camera publisher (RGB raw SHM + compressed JPEG; optional depth-at-bbox queryable)
+description: OAK camera publisher — RGBD (RGBA + aligned depth16) over SHM, compressed JPEG over the network
 author: Bubbaloop Team
 
 command: pixi run main
