@@ -53,3 +53,12 @@ nodes:
     tags: [processor, vlm, ollama, gpu]
     repo: kornia/bubbaloop-nodes-official
     subdir: camera-vlm
+
+  - name: oak-camera
+    description: "OAK (Luxonis) depth camera — RGB pub + depth-at-bbox queryable"
+    version: "0.1.0"
+    type: python
+    category: camera
+    tags: [sensor, camera, depth, oak, luxonis, stereo]
+    repo: kornia/bubbaloop-nodes-official
+    subdir: oak-camera
