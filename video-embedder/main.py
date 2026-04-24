@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import argparse
 import logging
+import os
 import re
 import threading
 import time
@@ -36,6 +37,36 @@ from PIL import Image
 from bubbaloop_sdk import NodeContext, run_node
 
 log = logging.getLogger("video-embedder")
+
+# facebookresearch/vjepa2's hub config (src/hub/backbones.py) currently ships
+# with a dev placeholder URL: VJEPA_BASE_URL = "http://localhost:8300".
+# We rewrite it to Meta's public CDN the first time we see it in the torch
+# hub cache; subsequent runs are no-ops. Remove once upstream issue #137
+# (HF weight hosting) lands or they fix the placeholder.
+_VJEPA_HUB_CACHED_CONFIG = os.path.expanduser(
+    "~/.cache/torch/hub/facebookresearch_vjepa2_main/src/hub/backbones.py"
+)
+_VJEPA_BAD_URL = 'VJEPA_BASE_URL = "http://localhost:8300"'
+_VJEPA_GOOD_URL = 'VJEPA_BASE_URL = "https://dl.fbaipublicfiles.com/vjepa2"'
+
+
+def _patch_vjepa2_hub_url() -> bool:
+    """Rewrite the dev placeholder URL in the cached hubconf. Idempotent.
+
+    Returns True iff the file was patched this call. Returns False if the
+    cached repo isn't present yet (first run — the caller should invoke
+    torch.hub.load once to trigger the clone, then retry).
+    """
+    if not os.path.exists(_VJEPA_HUB_CACHED_CONFIG):
+        return False
+    with open(_VJEPA_HUB_CACHED_CONFIG) as f:
+        src = f.read()
+    if _VJEPA_BAD_URL not in src:
+        return False
+    with open(_VJEPA_HUB_CACHED_CONFIG, "w") as f:
+        f.write(src.replace(_VJEPA_BAD_URL, _VJEPA_GOOD_URL))
+    log.warning("Patched facebookresearch/vjepa2 hubconf: localhost:8300 → public CDN")
+    return True
 
 _NAME_RE = re.compile(r"^[a-zA-Z0-9/_\-\.]+$")
 _RESIZE = (384, 384)
@@ -104,9 +135,22 @@ class VJepa21Model:
         self.device = device
         log.info("Loading V-JEPA 2.1 via torch.hub: %s on %s...", entrypoint, device)
         t0 = time.monotonic()
-        loaded = torch.hub.load(
-            "facebookresearch/vjepa2", entrypoint, trust_repo=True,
-        )
+
+        # Preemptively patch if the repo is already cached from a previous run.
+        _patch_vjepa2_hub_url()
+        try:
+            loaded = torch.hub.load(
+                "facebookresearch/vjepa2", entrypoint, trust_repo=True,
+            )
+        except Exception as first_exc:
+            # First run: hub just cloned the repo but hit the placeholder URL
+            # during state-dict download. Patch the now-cached config and retry.
+            if not _patch_vjepa2_hub_url():
+                raise
+            log.warning("First torch.hub load failed (%s); retrying with patched URL", first_exc)
+            loaded = torch.hub.load(
+                "facebookresearch/vjepa2", entrypoint, trust_repo=True,
+            )
         # vjepa2 torch.hub entrypoints historically return (encoder, predictor).
         # For embedding extraction we only need the encoder.
         self._model = loaded[0] if isinstance(loaded, tuple) else loaded

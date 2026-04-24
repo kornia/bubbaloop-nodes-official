@@ -67,9 +67,27 @@ pixi install
 pixi run main
 ```
 
-First `pixi run main` downloads the V-JEPA 2.1 checkpoint into
+First `pixi run main` downloads the V-JEPA 2.1 checkpoint (~1.55 GB) into
 `~/.cache/torch/hub/`. No `HF_TOKEN` or license required (torch.hub fetches
-from Meta's GitHub release artifacts).
+from Meta's public CDN at `dl.fbaipublicfiles.com`).
+
+### Upstream URL patch (self-healing)
+
+`facebookresearch/vjepa2`'s hub config ships with a dev placeholder URL
+(`VJEPA_BASE_URL = "http://localhost:8300"` — see upstream issue #137).
+On startup `_patch_vjepa2_hub_url()` rewrites the cached
+`~/.cache/torch/hub/facebookresearch_vjepa2_main/src/hub/backbones.py`
+to the public CDN. Idempotent; safe to remove once Meta fixes the upstream
+file or publishes weights to HuggingFace.
+
+Measured on Jetson Orin with `vjepa2_1_vit_base_384` and 16-frame clips:
+
+| Phase | Time |
+|---|---|
+| Model load + first CUDA warmup | ~4 s |
+| Steady-state forward pass | ~1.5 s per clip |
+
+Comfortably fits the default `target_hz: 0.5` (one clip per 2 s).
 
 ## Tests
 
