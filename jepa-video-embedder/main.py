@@ -1,4 +1,4 @@
-"""video-embedder — V-JEPA 2.1 clip embeddings from a camera frame stream.
+"""jepa-video-embedder — V-JEPA 2.1 clip embeddings from a camera frame stream.
 
 Subscribes to a local-SHM camera topic, maintains a ring buffer of the last
 ``clip_frames`` frames, and on every ``1 / target_hz`` seconds packs them as a
@@ -36,7 +36,7 @@ import torch
 from PIL import Image
 from bubbaloop_sdk import NodeContext, run_node
 
-log = logging.getLogger("video-embedder")
+log = logging.getLogger("jepa-video-embedder")
 
 # facebookresearch/vjepa2's hub config (src/hub/backbones.py) currently ships
 # with a dev placeholder URL: VJEPA_BASE_URL = "http://localhost:8300".
@@ -86,6 +86,9 @@ def _validate(cfg: dict) -> dict:
     target_hz = float(cfg.get("target_hz", 0.5))
     if not 0.01 <= target_hz <= 30.0:
         raise ValueError("config.target_hz must be in [0.01, 30]")
+    precision = cfg.get("precision", "fp16")
+    if precision not in ("fp16", "fp32"):
+        raise ValueError("config.precision must be 'fp16' or 'fp32'")
     return {
         "name": name,
         "input_topic": cfg["input_topic"],
@@ -93,6 +96,7 @@ def _validate(cfg: dict) -> dict:
         "device": cfg.get("device", "cuda"),
         "clip_frames": clip_frames,
         "target_hz": target_hz,
+        "precision": precision,
     }
 
 
@@ -130,10 +134,16 @@ class VJepa21Model:
     cache. Subsequent runs reuse it.
     """
 
-    def __init__(self, entrypoint: str, device: str = "cuda"):
+    def __init__(self, entrypoint: str, device: str = "cuda", precision: str = "fp16"):
         self.entrypoint = entrypoint
         self.device = device
-        log.info("Loading V-JEPA 2.1 via torch.hub: %s on %s...", entrypoint, device)
+        # "fp16" = autocast activations to float16 on cuda (weights stay fp32,
+        # tensor-core path active on Ampere+). "fp32" = no autocast.
+        self.precision = precision
+        log.info(
+            "Loading V-JEPA 2.1 via torch.hub: %s on %s (precision=%s)...",
+            entrypoint, device, precision,
+        )
         t0 = time.monotonic()
 
         # Preemptively patch if the repo is already cached from a previous run.
@@ -169,11 +179,17 @@ class VJepa21Model:
         Returns:
             1D tensor of shape (embedding_dim,) -- mean of patch features.
         """
-        clip = clip.to(self.device)
-        out = self._model(clip)
+        clip = clip.to(self.device, non_blocking=True)
+        use_autocast = self.precision == "fp16" and self.device.startswith("cuda")
+        if use_autocast:
+            with torch.autocast(device_type="cuda", dtype=torch.float16):
+                out = self._model(clip)
+        else:
+            out = self._model(clip)
         # Output is either (B, N_tokens, D) tensor or an object with .last_hidden_state.
         tokens = getattr(out, "last_hidden_state", out)
-        embedding = tokens.mean(dim=1).squeeze(0)  # (D,)
+        # Cast back to fp32 for the pool + cpu transfer (no-op if already fp32).
+        embedding = tokens.float().mean(dim=1).squeeze(0)  # (D,)
         if self.embedding_dim is None:
             self.embedding_dim = int(embedding.shape[0])
         return embedding.cpu()
@@ -201,14 +217,16 @@ class FrameRing:
         return stacked.unsqueeze(0)  # (1, 3, T, H, W)
 
 
-class VideoEmbedderNode:
-    name = "video-embedder"
+class JepaVideoEmbedderNode:
+    name = "jepa-video-embedder"
 
     def __init__(self, ctx: NodeContext, config: dict) -> None:
         self._ctx = ctx
         self._cfg = _validate(config)
         self._ring = FrameRing(self._cfg["clip_frames"])
-        self._model = VJepa21Model(self._cfg["model"], self._cfg["device"])
+        self._model = VJepa21Model(
+            self._cfg["model"], self._cfg["device"], self._cfg["precision"],
+        )
         self._interval = 1.0 / self._cfg["target_hz"]
         self._seq = 0
 
@@ -216,10 +234,11 @@ class VideoEmbedderNode:
         self._pub = ctx.publisher_json("embeddings")
 
         log.info(
-            "Ready: input=%s model=%s device=%s clip_frames=%d target_hz=%.2f",
+            "Ready: input=%s model=%s device=%s precision=%s clip_frames=%d target_hz=%.2f",
             self._cfg["input_topic"],
             self._cfg["model"],
             self._cfg["device"],
+            self._cfg["precision"],
             self._cfg["clip_frames"],
             self._cfg["target_hz"],
         )
@@ -295,4 +314,4 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("-c", "--config", default="config.yaml")
     parser.parse_known_args()  # run_node re-parses internally
-    run_node(VideoEmbedderNode)
+    run_node(JepaVideoEmbedderNode)

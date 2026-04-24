@@ -1,5 +1,5 @@
 [workspace]
-name = "video-embedder"
+name = "jepa-video-embedder"
 channels = ["conda-forge"]
 platforms = ["linux-aarch64"]
 

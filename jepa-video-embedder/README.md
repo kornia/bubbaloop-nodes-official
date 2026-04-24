@@ -1,4 +1,4 @@
-# video-embedder
+# jepa-video-embedder
 
 V-JEPA 2.1 video-clip embeddings for Bubbaloop. Subscribes to a local-SHM
 camera frame stream, buffers the last N frames, and publishes a pooled
@@ -39,7 +39,7 @@ The SDK wraps this dict in its standard `{header, body}` provenance envelope
 
 ```yaml
 # config.yaml
-name: video_embedder
+name: jepa_video_embedder
 role: processor
 
 input_topic: tapo_terrace_camera/raw   # or oak_primary/rgbd
@@ -62,7 +62,7 @@ Available model entrypoints (torch.hub names):
 ## Install & run
 
 ```bash
-cd video-embedder
+cd jepa-video-embedder
 pixi install
 pixi run main
 ```

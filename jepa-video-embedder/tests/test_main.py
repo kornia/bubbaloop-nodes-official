@@ -1,4 +1,4 @@
-"""Unit tests for video-embedder config validation, preprocessing, ring buffer.
+"""Unit tests for jepa-video-embedder config validation, preprocessing, ring buffer.
 
 Stubs out the bubbaloop_sdk so importing main.py doesn't require the SDK at
 test time. Does NOT load the V-JEPA 2.1 model (which needs internet + CUDA).
@@ -26,7 +26,7 @@ from main import FrameRing, _extract_rgba, _validate, preprocess_frame  # noqa: 
 # -------- config validation --------
 
 def test_validate_defaults():
-    cfg = _validate({"name": "video_embedder", "input_topic": "cam/raw"})
+    cfg = _validate({"name": "jepa_video_embedder", "input_topic": "cam/raw"})
     assert cfg["model"] == "vjepa2_1_vit_base_384"
     assert cfg["clip_frames"] == 16
     assert cfg["target_hz"] == 0.5
@@ -45,7 +45,7 @@ def test_validate_bad_name_regex():
 
 def test_validate_missing_input_topic():
     with pytest.raises(ValueError, match="input_topic"):
-        _validate({"name": "video_embedder"})
+        _validate({"name": "jepa_video_embedder"})
 
 
 def test_validate_clip_frames_bounds():
