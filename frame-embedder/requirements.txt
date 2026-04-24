@@ -1,0 +1,4 @@
+torch
+transformers
+Pillow
+bubbaloop-sdk @ git+https://github.com/kornia/bubbaloop.git#subdirectory=python-sdk
