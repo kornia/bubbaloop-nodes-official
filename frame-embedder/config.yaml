@@ -1,0 +1,6 @@
+name: tapo_terrace_embedder
+role: processor
+input_topic: tapo_terrace_camera/raw
+model: facebook/dinov3-vitb16-pretrain-lvd1689m
+device: cuda
+target_hz: 2.0

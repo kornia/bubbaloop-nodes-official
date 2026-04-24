@@ -1,0 +1,43 @@
+apiVersion: bubbaloop.dev/v1
+name: frame-embedder
+version: "0.1.0"
+type: python
+description: "DINOv3 vision embeddings - encodes raw camera frames to embedding vectors"
+author: kornia
+
+command: pixi run main
+
+capabilities:
+  - processor
+
+inputs:
+  - name: raw
+    topic_suffix: "{instance}/input/raw"
+    encoding: "application/protobuf;bubbaloop.camera.v1.RawImage"
+    description: "RGBA image frames from camera node (SHM)"
+
+outputs:
+  - name: embeddings
+    topic_suffix: "{instance}/embeddings"
+    encoding: "application/json"
+    description: "DINOv3 embedding vectors as JSON"
+
+config_schema:
+  type: object
+  required: [input_topic]
+  properties:
+    input_topic:
+      type: string
+      description: "Camera node raw image topic suffix (e.g. rtsp_camera/raw)"
+    model:
+      type: string
+      default: "facebook/dinov3-vitb16-pretrain-lvd1689m"
+      description: "HuggingFace model identifier (gated — accept license + set HF_TOKEN)"
+    device:
+      type: string
+      enum: ["cuda", "cpu"]
+      default: "cuda"
+    target_hz:
+      type: number
+      default: 2.0
+      description: "Max inference rate in Hz"
