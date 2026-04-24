@@ -1,0 +1,10 @@
+name: video_embedder
+role: processor
+
+input_topic: tapo_terrace_camera/raw
+
+model: vjepa2_1_vit_base_384
+device: cuda
+
+clip_frames: 16
+target_hz: 0.5

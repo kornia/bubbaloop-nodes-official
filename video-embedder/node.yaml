@@ -1,0 +1,63 @@
+apiVersion: bubbaloop.dev/v1
+name: video-embedder
+version: "0.1.0"
+type: python
+description: "V-JEPA 2.1 video embeddings — encodes N-frame clips from a camera into fixed-dim vectors"
+author: kornia
+
+command: pixi run main
+
+capabilities:
+  - processor
+
+inputs:
+  - name: frames
+    topic_suffix: "{instance}/input/frames"
+    encoding: "application/cbor"
+    description: "Camera frames over local SHM. Accepts oak-camera rgbd (body.rgb.data) or legacy RGBA (body.data)."
+
+outputs:
+  - name: embeddings
+    topic_suffix: "{instance}/embeddings"
+    encoding: "application/json"
+    description: "V-JEPA 2.1 pooled clip embeddings"
+
+requires:
+  hardware:
+    - NVIDIA GPU with CUDA support (Jetson Orin or dGPU)
+  software:
+    - Python 3.10
+    - torch >= 2.8 (Jetson AI Lab wheel on aarch64)
+    - timm, einops
+    - Internet access on first run (torch.hub downloads the model)
+
+config_schema:
+  type: object
+  required: [input_topic]
+  properties:
+    input_topic:
+      type: string
+      description: "Upstream camera raw/rgbd topic suffix (e.g. tapo_terrace_camera/raw or oak_primary/rgbd)."
+    model:
+      type: string
+      enum:
+        - vjepa2_1_vit_base_384
+        - vjepa2_1_vit_large_384
+        - vjepa2_1_vit_giant_384
+        - vjepa2_1_vit_gigantic_384
+      default: "vjepa2_1_vit_base_384"
+      description: "V-JEPA 2.1 torch.hub entrypoint name"
+    device:
+      type: string
+      enum: ["cuda", "cpu"]
+      default: "cuda"
+    clip_frames:
+      type: integer
+      default: 16
+      minimum: 2
+      maximum: 64
+      description: "Number of frames per clip forwarded to V-JEPA 2.1"
+    target_hz:
+      type: number
+      default: 0.5
+      description: "Max inference rate in Hz (one clip embedding per 1/target_hz seconds)"
