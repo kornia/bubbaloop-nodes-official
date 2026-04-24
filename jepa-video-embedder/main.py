@@ -33,8 +33,13 @@ from typing import Deque, Optional
 
 import numpy as np
 import torch
-from PIL import Image
+import torch.nn.functional as F
 from bubbaloop_sdk import NodeContext, run_node
+
+# Our clip shape is fixed at (1, 3, clip_frames, 384, 384). cuDNN's autotuner
+# picks the fastest conv algorithm on the first forward pass and caches it for
+# every subsequent identically-shaped call. 5-15% win, zero risk.
+torch.backends.cudnn.benchmark = True
 
 log = logging.getLogger("jepa-video-embedder")
 
@@ -97,6 +102,7 @@ def _validate(cfg: dict) -> dict:
         "clip_frames": clip_frames,
         "target_hz": target_hz,
         "precision": precision,
+        "compile": bool(cfg.get("compile", True)),
     }
 
 
@@ -119,12 +125,17 @@ def _extract_rgba(msg) -> Optional[tuple[bytes, int, int]]:
 
 
 def preprocess_frame(rgba_bytes: bytes, width: int, height: int) -> torch.Tensor:
-    """RGBA bytes -> (3, 384, 384) ImageNet-normalized float32 tensor."""
-    image = Image.frombytes("RGBA", (width, height), rgba_bytes)
-    image = image.convert("RGB").resize(_RESIZE, Image.BILINEAR)
-    arr = np.array(image, dtype=np.float32) / 255.0
-    tensor = torch.from_numpy(arr).permute(2, 0, 1)  # HWC -> CHW
-    return (tensor - _IMAGENET_MEAN) / _IMAGENET_STD
+    """RGBA bytes -> (3, 384, 384) ImageNet-normalized float32 tensor.
+
+    Pure numpy + torch pipeline (no PIL). Steps: frombuffer the raw RGBA bytes
+    into a (H, W, 4) uint8 view, drop alpha, permute to (C, H, W), cast to
+    float, resize bilinearly with F.interpolate, ImageNet-normalize.
+    """
+    arr = np.frombuffer(rgba_bytes, dtype=np.uint8).reshape(height, width, 4)
+    rgb = torch.from_numpy(arr[:, :, :3].copy())  # (H, W, 3) uint8 — copy so torch owns it
+    chw = rgb.permute(2, 0, 1).unsqueeze(0).float() / 255.0  # (1, 3, H, W) float32 in [0,1]
+    resized = F.interpolate(chw, size=_RESIZE, mode="bilinear", align_corners=False)
+    return (resized.squeeze(0) - _IMAGENET_MEAN) / _IMAGENET_STD
 
 
 class VJepa21Model:
@@ -134,15 +145,22 @@ class VJepa21Model:
     cache. Subsequent runs reuse it.
     """
 
-    def __init__(self, entrypoint: str, device: str = "cuda", precision: str = "fp16"):
+    def __init__(
+        self,
+        entrypoint: str,
+        device: str = "cuda",
+        precision: str = "fp16",
+        compile_model: bool = True,
+    ):
         self.entrypoint = entrypoint
         self.device = device
         # "fp16" = autocast activations to float16 on cuda (weights stay fp32,
         # tensor-core path active on Ampere+). "fp32" = no autocast.
         self.precision = precision
+        self.compile_model = compile_model
         log.info(
-            "Loading V-JEPA 2.1 via torch.hub: %s on %s (precision=%s)...",
-            entrypoint, device, precision,
+            "Loading V-JEPA 2.1 via torch.hub: %s on %s (precision=%s, compile=%s)...",
+            entrypoint, device, precision, compile_model,
         )
         t0 = time.monotonic()
 
@@ -167,6 +185,19 @@ class VJepa21Model:
         self._model.to(device)
         self._model.train(False)  # inference mode: no dropout, frozen BN
         log.info("Model loaded in %.1fs", time.monotonic() - t0)
+
+        # torch.compile traces the forward graph on the first call and caches a
+        # fused/optimized version. First real inference is slow (compile cost,
+        # ~20-60s on Orin); steady-state is typically 15-30% faster. Graceful
+        # fallback to eager if Triton / TorchInductor isn't available on this
+        # platform (common on older Jetson Torch wheels).
+        if compile_model and device.startswith("cuda"):
+            try:
+                self._model = torch.compile(self._model, mode="default", dynamic=False)
+                log.info("torch.compile enabled (mode=default)")
+            except Exception as exc:
+                log.warning("torch.compile unavailable, falling back to eager: %s", exc)
+
         self.embedding_dim: Optional[int] = None
 
     @torch.inference_mode()
@@ -225,7 +256,10 @@ class JepaVideoEmbedderNode:
         self._cfg = _validate(config)
         self._ring = FrameRing(self._cfg["clip_frames"])
         self._model = VJepa21Model(
-            self._cfg["model"], self._cfg["device"], self._cfg["precision"],
+            self._cfg["model"],
+            self._cfg["device"],
+            self._cfg["precision"],
+            self._cfg["compile"],
         )
         self._interval = 1.0 / self._cfg["target_hz"]
         self._seq = 0
@@ -234,11 +268,12 @@ class JepaVideoEmbedderNode:
         self._pub = ctx.publisher_json("embeddings")
 
         log.info(
-            "Ready: input=%s model=%s device=%s precision=%s clip_frames=%d target_hz=%.2f",
+            "Ready: input=%s model=%s device=%s precision=%s compile=%s clip_frames=%d target_hz=%.2f",
             self._cfg["input_topic"],
             self._cfg["model"],
             self._cfg["device"],
             self._cfg["precision"],
+            self._cfg["compile"],
             self._cfg["clip_frames"],
             self._cfg["target_hz"],
         )

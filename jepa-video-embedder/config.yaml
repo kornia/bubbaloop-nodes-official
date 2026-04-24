@@ -8,3 +8,9 @@ device: cuda
 
 clip_frames: 16
 target_hz: 0.5
+
+# torch.compile is disabled until we track down a "RuntimeError: Already
+# borrowed" that fires on Jetson Orin with torch 2.8 + zenoh-python. cudnn
+# autotune is unconditional (see main.py module scope) and gives most of
+# the benefit anyway.
+compile: false
