@@ -1,0 +1,102 @@
+apiVersion: bubbaloop.dev/v1
+name: jepa-tracker
+version: "0.1.0"
+type: python
+description: "V-JEPA 2.1 zero-training object detection + tracking from dense embeddings; publishes JSON tracks and a JPEG overlay for the dashboard"
+author: kornia
+
+command: pixi run main
+
+capabilities:
+  - processor
+
+inputs:
+  - name: frames
+    topic_suffix: "{instance}/input/frames"
+    encoding: "application/cbor"
+    description: "RGBA frames from a camera node (legacy raw or oak-camera body.rgb)"
+
+outputs:
+  - name: tracks
+    topic_suffix: "{instance}/tracks"
+    encoding: "application/json"
+    description: "Per-clip detected blobs + assigned track IDs (JSON)"
+  - name: blobs_overlay
+    topic_suffix: "{instance}/blobs_overlay"
+    encoding: "application/cbor"
+    description: "JPEG overlay (clip-center frame + colored blob masks) for dashboard viz"
+
+requires:
+  hardware:
+    - NVIDIA GPU with CUDA support (Jetson Orin or dGPU)
+  software:
+    - Python 3.10
+    - torch >= 2.8 (Jetson AI Lab wheel on aarch64)
+    - timm, einops, kornia
+    - Internet access on first run (torch.hub downloads V-JEPA 2.1 weights)
+
+config_schema:
+  type: object
+  required: [input_topic]
+  properties:
+    input_topic:
+      type: string
+      description: "Upstream camera raw/rgbd topic suffix (e.g. tapo_terrace_camera/raw)."
+    model:
+      type: string
+      enum:
+        - vjepa2_1_vit_base_384
+        - vjepa2_1_vit_large_384
+      default: "vjepa2_1_vit_base_384"
+    device:
+      type: string
+      enum: ["cuda", "cpu"]
+      default: "cuda"
+    precision:
+      type: string
+      enum: ["fp16", "fp32"]
+      default: "fp16"
+    clip_frames:
+      type: integer
+      default: 16
+      minimum: 2
+      maximum: 64
+    target_hz:
+      type: number
+      default: 0.5
+      description: "Detection rate in Hz (one clip pass per 1/target_hz seconds)."
+    sim_threshold:
+      type: number
+      default: 0.6
+      minimum: 0.0
+      maximum: 1.0
+      description: "Cosine-similarity threshold for feature-aware connected components."
+    variance_k:
+      type: number
+      default: 1.5
+      description: "Moving-token threshold = variance_k * median(variance)."
+    min_blob_tokens:
+      type: integer
+      default: 8
+      description: "Drop blobs smaller than this many tokens."
+    sig_match_threshold:
+      type: number
+      default: 0.65
+      description: "Cosine threshold to associate a new blob with an existing track."
+    max_track_age_clips:
+      type: integer
+      default: 3
+      description: "Drop tracks not detected for this many consecutive clips."
+    publish_overlay:
+      type: boolean
+      default: true
+    overlay_alpha:
+      type: number
+      default: 0.45
+      minimum: 0.0
+      maximum: 1.0
+    overlay_jpeg_quality:
+      type: integer
+      default: 80
+      minimum: 1
+      maximum: 100

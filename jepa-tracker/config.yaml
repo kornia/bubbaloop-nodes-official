@@ -1,0 +1,24 @@
+name: tapo_terrace_tracker
+role: processor
+
+input_topic: tapo_terrace_camera/raw
+
+model: vjepa2_1_vit_base_384
+device: cuda
+precision: fp16
+clip_frames: 16
+target_hz: 0.5
+
+# Feature-aware connected components
+sim_threshold: 0.6
+variance_k: 1.5
+min_blob_tokens: 8
+
+# Cross-clip tracking
+sig_match_threshold: 0.65
+max_track_age_clips: 3
+
+# Overlay JPEG (toggle off if dashboard not in use)
+publish_overlay: true
+overlay_alpha: 0.45
+overlay_jpeg_quality: 80
