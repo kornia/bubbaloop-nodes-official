@@ -8,3 +8,26 @@ jpeg_every_n: 3
 jpeg_quality: 80
 
 enable_depth: true
+
+# PNG compression level for depth in the `compressed` body (0=none,
+# 1=fast ~2ms@720p, 9=max ~10ms). Level 1 is the recommended default —
+# natural depth has limited gain past ~3 because PNG's filter stage already
+# captures most spatial redundancy.
+depth_png_compression: 1
+
+# RGB↔depth synchronization (dai.node.Sync, runs on Leon coprocessor).
+# Default = half a frame interval at the configured fps (omit to auto-derive).
+# Tighter → more drops; looser → consecutive depth frames may pair with the
+# same RGB. 16ms at 30fps is the safe sweet spot.
+# sync_threshold_ms: 16
+
+# How aggressively to drop unsynced frames.
+#   -1 (default): only emit perfectly-synced pairs (drop the rest)
+#    0: emit as soon as the group is filled, regardless of timing
+#   >0: try N times to sync, then send best-effort
+sync_attempts: -1
+
+# How often to re-publish calibration on `{name}/calibration`. Static-data
+# semantics: any subscriber joining within this interval sees the current
+# calibration. 1 Hz × ~200 B = ~200 B/s — negligible bandwidth.
+calibration_publish_interval_secs: 1.0

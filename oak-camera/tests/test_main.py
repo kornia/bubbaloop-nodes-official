@@ -7,11 +7,16 @@ import pytest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
-# main.py imports depthai/cv2 at module scope for the runtime pipeline. The
-# pure functions we actually test don't touch those libs, so stub them out
-# when they aren't installed (CI image doesn't carry hardware deps).
-for _mod in ("depthai", "cv2", "cbor2"):
+# main.py imports depthai/kornia_rs/PIL at module scope for the runtime
+# pipeline. The pure functions we actually test don't touch those libs, so
+# stub them out when they aren't installed (CI image doesn't carry hardware
+# deps). PIL needs the submodule stubbed too so `from PIL import Image` works.
+for _mod in ("depthai", "kornia_rs", "cbor2"):
     sys.modules.setdefault(_mod, types.ModuleType(_mod))
+if "PIL" not in sys.modules:
+    sys.modules["PIL"] = types.ModuleType("PIL")
+    sys.modules["PIL.Image"] = types.ModuleType("PIL.Image")
+    sys.modules["PIL"].Image = sys.modules["PIL.Image"]
 
 from main import _rgbd_body, _validate
 
@@ -25,6 +30,11 @@ def test_validate_defaults():
     assert cfg["jpeg_every_n"] == 3
     assert cfg["jpeg_quality"] == 80
     assert cfg["enable_depth"] is True
+    # Default sync threshold = half-frame interval, e.g. 16ms at 30fps.
+    assert cfg["sync_threshold_ms"] == 16
+    # -1 = drop unsynced frames (strictest pairing).
+    assert cfg["sync_attempts"] == -1
+    assert cfg["calibration_publish_interval_secs"] == 1.0
 
 
 def test_validate_missing_name():
@@ -98,3 +108,75 @@ def test_rgbd_body_with_depth():
         "step": 4,  # 2 pixels * 2 bytes
         "data": depth_bytes,
     }
+
+
+def test_rgbd_body_no_calibration_field():
+    """Calibration travels on its own topic — body never carries it."""
+    body = _rgbd_body(b"\x00" * 4, 1, 1, "oak_primary", "host1", 1)
+    assert "calibration" not in body
+
+
+def test_rgbd_body_acq_time_passthrough():
+    """When acq_time_ns is provided (synced path), the body uses it as acq_time
+    instead of falling back to wall-clock."""
+    body = _rgbd_body(
+        b"\x00" * 4, 1, 1, "oak_primary", "host1", 7,
+        acq_time_ns=1_700_000_000_123_456_789,
+        sync_interval_ns=4_500_000,  # 4.5 ms RGB↔depth gap
+    )
+    assert body["header"]["acq_time"] == 1_700_000_000_123_456_789
+    assert body["header"]["sync_interval_ns"] == 4_500_000
+    # pub_time is independent (wall-clock at body-build time)
+    assert body["header"]["pub_time"] != body["header"]["acq_time"]
+
+
+def test_rgbd_body_no_acq_time_falls_back_to_wallclock():
+    """No acq_time_ns provided (unsynced path) → acq_time == pub_time."""
+    body = _rgbd_body(b"\x00" * 4, 1, 1, "oak", "h1", 0)
+    # Both timestamps stamped in the same call — equal within ~1us.
+    assert body["header"]["acq_time"] == body["header"]["pub_time"]
+    assert "sync_interval_ns" not in body["header"]
+
+
+def test_validate_depth_png_compression_default():
+    cfg = _validate({"name": "oak"})
+    assert cfg["depth_png_compression"] == 1
+
+
+def test_validate_depth_png_compression_out_of_range():
+    with pytest.raises(ValueError, match="depth_png_compression"):
+        _validate({"name": "oak", "depth_png_compression": 10})
+    with pytest.raises(ValueError, match="depth_png_compression"):
+        _validate({"name": "oak", "depth_png_compression": -1})
+
+
+def test_validate_sync_threshold_default_scales_with_fps():
+    """At 60 fps the default should be ~8ms (half-interval); at 10 fps, ~50ms."""
+    cfg_60 = _validate({"name": "oak", "fps": 60})
+    assert cfg_60["sync_threshold_ms"] == 8
+    cfg_10 = _validate({"name": "oak", "fps": 10})
+    assert cfg_10["sync_threshold_ms"] == 50
+
+
+def test_validate_sync_threshold_override():
+    cfg = _validate({"name": "oak", "sync_threshold_ms": 33})
+    assert cfg["sync_threshold_ms"] == 33
+
+
+def test_validate_sync_threshold_out_of_range():
+    with pytest.raises(ValueError, match="sync_threshold_ms"):
+        _validate({"name": "oak", "sync_threshold_ms": 0})
+    with pytest.raises(ValueError, match="sync_threshold_ms"):
+        _validate({"name": "oak", "sync_threshold_ms": 1001})
+
+
+def test_validate_sync_attempts_out_of_range():
+    with pytest.raises(ValueError, match="sync_attempts"):
+        _validate({"name": "oak", "sync_attempts": -2})
+
+
+def test_validate_calibration_publish_interval_out_of_range():
+    with pytest.raises(ValueError, match="calibration_publish_interval"):
+        _validate({"name": "oak", "calibration_publish_interval_secs": 0.05})
+    with pytest.raises(ValueError, match="calibration_publish_interval"):
+        _validate({"name": "oak", "calibration_publish_interval_secs": 100})
