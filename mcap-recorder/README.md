@@ -28,19 +28,17 @@ pixi install
 
 ## Configure
 
-`config.yaml` carries *defaults* — every field is also overridable per `start_recording` command:
+`config.yaml` carries one field — `name`, the Zenoh prefix the recorder declares its `command` queryable under. Recording parameters are passed per-session in the `start_recording` command (see below):
 
 ```yaml
 name: mcap-recorder
-topic_patterns:
-  - "bubbaloop/global/**"                 # all global traffic
-  # - "bubbaloop/local/**"                # SHM, same-machine only (Linux)
-  # - "bubbaloop/global/*/oak-camera/compressed"
-output_dir: /tmp/bubbaloop-recordings
-chunk_duration_secs: 300
-chunk_max_bytes: 1073741824               # 1 GiB
-decode_timestamps: false                  # opt-in: parse CBOR header for ts_ns
 ```
+
+| Param | Where it comes from |
+|---|---|
+| `name` | `config.yaml` (required at boot) |
+| `topic_patterns`, `output_dir` | `start_recording` command — required, no default |
+| `chunk_duration_secs` (default 300), `chunk_max_bytes` (default 1 GiB), `decode_timestamps` (default false) | `start_recording` command — code defaults if omitted |
 
 ## Register and run via bubbaloop
 
@@ -123,6 +121,6 @@ The bridge from Zenoh threads → single writer thread is required because the `
 |---|---|
 | `recorder/node.py` | command queryable + dispatch |
 | `recorder/commands.py` | envelope parsing (flat + nested wire formats) |
-| `recorder/config.py` | `Defaults` / `StartParams` validation |
+| `recorder/config.py` | `NodeConfig` (boot identity) + `StartParams` (per-session) |
 | `recorder/session.py` | subscribers + writer thread bridge |
 | `recorder/mcap_writer.py` | `ChunkedMcapWriter` with `.active` → `.mcap` rename |

@@ -4,9 +4,10 @@ The process starts clean (no recording). It declares a Zenoh `command`
 queryable and serves three commands sent via the bubbaloop MCP plugin's
 `node_command_send` tool (or directly via Zenoh):
 
-  start_recording { topic_patterns?, output_dir?, chunk_duration_secs?,
-                    chunk_max_bytes?, decode_timestamps? }
-      Begins a new session. Any field omitted falls back to config.yaml.
+  start_recording { topic_patterns, output_dir,
+                    chunk_duration_secs?, chunk_max_bytes?, decode_timestamps? }
+      Begins a new session. `topic_patterns` and `output_dir` are required;
+      the rest fall back to code-level defaults (see config.py).
       Errors `E_ALREADY_RECORDING` if a session is already active.
 
   stop_recording {}
@@ -33,7 +34,7 @@ from typing import Optional
 import zenoh
 
 from .commands import parse_envelope
-from .config import Defaults, StartParams, load_defaults, resolve_start_params
+from .config import NodeConfig, StartParams, load_config, resolve_start_params
 from .session import RecordingSession
 
 log = logging.getLogger(__name__)
@@ -61,20 +62,16 @@ class RecorderNode:
 
     def __init__(self, ctx, config: dict):
         self._ctx = ctx
-        self._defaults: Defaults = load_defaults(config)
+        self._config: NodeConfig = load_config(config)
         # Active session state — guarded by _lock so commands and the
         # shutdown path don't race.
         self._lock = threading.Lock()
         self._active: Optional[RecordingSession] = None
-        log.info(
-            "mcap-recorder ready (command-driven). Defaults: patterns=%s output=%s",
-            list(self._defaults.topic_patterns) or "<unset>",
-            self._defaults.output_dir or "<unset>",
-        )
+        log.info("mcap-recorder ready (command-driven), name=%s", self._config.name)
 
     def run(self) -> None:
         machine_id = _resolve_machine_id(self._ctx)
-        instance = self._defaults.name
+        instance = self._config.name
         command_key = f"bubbaloop/global/{machine_id}/{instance}/command"
         log.info("Declaring command queryable: %s", command_key)
 
@@ -146,7 +143,7 @@ class RecorderNode:
                 )
                 return
             try:
-                params: StartParams = resolve_start_params(envelope, self._defaults)
+                params: StartParams = resolve_start_params(envelope)
             except ValueError as exc:
                 self._reply_error(query, "E_INVALID_PARAMS", str(exc))
                 return
