@@ -1,7 +1,20 @@
+# Defaults for the mcap-recorder node. Every field here is also overridable
+# per `start_recording` command — this file just supplies the fallback when a
+# field is omitted.
 name: mcap-recorder
-topic_patterns:
-  - "bubbaloop/global/*/tapo_terrace_camera/**"
-output_dir: /tmp/bubbaloop-recordings/terrace-final
-chunk_duration_secs: 60
-chunk_max_bytes: 134217728
-decode_timestamps: false
+
+# Zenoh key patterns to subscribe to. Empty here means the caller MUST pass
+# `topic_patterns` in the start_recording command.
+topic_patterns: []
+# Examples:
+#   - "bubbaloop/global/**"                      # all global traffic
+#   - "bubbaloop/local/**"                       # SHM, same-machine only
+#   - "bubbaloop/global/*/oak-camera/compressed" # one node's frames
+
+# Where to write `.mcap` chunks (absolute path; created if missing).
+# Empty means the caller MUST pass `output_dir` in the start_recording command.
+output_dir: ""
+
+chunk_duration_secs: 300
+chunk_max_bytes: 1073741824   # 1 GiB
+decode_timestamps: false      # opt-in: parse CBOR header.ts_ns for log_time

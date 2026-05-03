@@ -17,10 +17,8 @@ queryable and serves three commands sent via the bubbaloop MCP plugin's
       Returns "idle" or "recording" with counters (messages, bytes,
       elapsed_secs, current_chunk).
 
-Wire format is the FLAT envelope established by bubbaloop PR #80:
-`{"command": "...", ...top-level params}`. The bubbaloop daemon's
-`node_command_send` tool produces exactly this shape from
-`(node_name, command, params)`.
+Wire format is the FLAT envelope established by bubbaloop PR #80; nested
+`{params: {...}}` is also accepted for older daemons. See `commands.py`.
 """
 
 from __future__ import annotations
@@ -28,71 +26,17 @@ from __future__ import annotations
 import json
 import logging
 import os
-import re
 import socket
 import threading
-from pathlib import Path
 from typing import Optional
 
 import zenoh
 
+from .commands import parse_envelope
+from .config import Defaults, StartParams, load_defaults, resolve_start_params
 from .session import RecordingSession
 
 log = logging.getLogger(__name__)
-
-_NAME_RE = re.compile(r"^[a-zA-Z0-9/_\-\.]+$")
-
-
-def _validate_defaults(cfg: dict) -> dict:
-    """config.yaml is now DEFAULTS — topic_patterns + output_dir are
-    optional here and only required at start_recording-time."""
-    name = cfg.get("name", "mcap-recorder")
-    if not isinstance(name, str) or not _NAME_RE.match(name):
-        raise ValueError(f"config.name must match {_NAME_RE.pattern} (got {name!r})")
-
-    return {
-        "name": name,
-        "topic_patterns": cfg.get("topic_patterns") or [],
-        "output_dir": cfg.get("output_dir"),
-        "chunk_duration_secs": int(cfg.get("chunk_duration_secs", 300)),
-        "chunk_max_bytes": int(cfg.get("chunk_max_bytes", 1_073_741_824)),
-        "decode_timestamps": bool(cfg.get("decode_timestamps", False)),
-    }
-
-
-def _resolve_start_params(params: dict, defaults: dict) -> dict:
-    """Merge start_recording params on top of defaults, validate, return
-    the concrete RecordingSession arguments."""
-    patterns = params.get("topic_patterns") or defaults.get("topic_patterns") or []
-    if not isinstance(patterns, list) or not patterns:
-        raise ValueError("topic_patterns must be a non-empty list (set in command or config.yaml)")
-    for p in patterns:
-        if not isinstance(p, str) or "\x00" in p:
-            raise ValueError(f"invalid topic pattern: {p!r}")
-
-    output_dir = params.get("output_dir") or defaults.get("output_dir")
-    if not isinstance(output_dir, str) or not output_dir:
-        raise ValueError("output_dir is required (absolute path) — set in command or config.yaml")
-    out_path = Path(output_dir)
-    if not out_path.is_absolute():
-        raise ValueError("output_dir must be an absolute path")
-    if ".." in out_path.parts:
-        raise ValueError("output_dir must not contain '..'")
-
-    chunk_duration = int(params.get("chunk_duration_secs", defaults["chunk_duration_secs"]))
-    if chunk_duration <= 0:
-        raise ValueError("chunk_duration_secs must be > 0")
-    chunk_max_bytes = int(params.get("chunk_max_bytes", defaults["chunk_max_bytes"]))
-    if chunk_max_bytes <= 0:
-        raise ValueError("chunk_max_bytes must be > 0")
-
-    return {
-        "topic_patterns": patterns,
-        "output_dir": out_path,
-        "chunk_duration_secs": chunk_duration,
-        "chunk_max_bytes": chunk_max_bytes,
-        "decode_timestamps": bool(params.get("decode_timestamps", defaults["decode_timestamps"])),
-    }
 
 
 def _resolve_machine_id(ctx) -> str:
@@ -117,20 +61,20 @@ class RecorderNode:
 
     def __init__(self, ctx, config: dict):
         self._ctx = ctx
-        self._defaults = _validate_defaults(config)
+        self._defaults: Defaults = load_defaults(config)
         # Active session state — guarded by _lock so commands and the
         # shutdown path don't race.
         self._lock = threading.Lock()
         self._active: Optional[RecordingSession] = None
         log.info(
             "mcap-recorder ready (command-driven). Defaults: patterns=%s output=%s",
-            self._defaults["topic_patterns"] or "<unset>",
-            self._defaults["output_dir"] or "<unset>",
+            list(self._defaults.topic_patterns) or "<unset>",
+            self._defaults.output_dir or "<unset>",
         )
 
     def run(self) -> None:
         machine_id = _resolve_machine_id(self._ctx)
-        instance = self._defaults["name"]
+        instance = self._defaults.name
         command_key = f"bubbaloop/global/{machine_id}/{instance}/command"
         log.info("Declaring command queryable: %s", command_key)
 
@@ -155,9 +99,19 @@ class RecorderNode:
     # ------------------------------------------------------------------
 
     def _on_query(self, query: zenoh.Query) -> None:
-        envelope = self._parse_envelope(query)
-        if envelope is None:
-            return  # already replied with an error
+        try:
+            payload = query.payload
+            raw = bytes(payload) if payload is not None else b""
+        except Exception as exc:
+            self._reply_error(query, "E_NO_PAYLOAD", str(exc))
+            return
+
+        envelope, err = parse_envelope(raw)
+        if err is not None:
+            self._reply_error(query, err.code, err.message)
+            return
+        assert envelope is not None  # parse_envelope contract: one or the other
+
         cmd = envelope.get("command")
         handlers = {
             "start_recording": self._handle_start,
@@ -178,34 +132,6 @@ class RecorderNode:
             log.exception("handler for %s raised", cmd)
             self._reply_error(query, "E_HANDLER", f"{type(exc).__name__}: {exc}")
 
-    def _parse_envelope(self, query: zenoh.Query) -> Optional[dict]:
-        try:
-            payload = query.payload
-            raw = bytes(payload) if payload is not None else b""
-        except Exception as exc:
-            self._reply_error(query, "E_NO_PAYLOAD", str(exc))
-            return None
-        if not raw:
-            self._reply_error(query, "E_EMPTY", "empty command payload")
-            return None
-        try:
-            envelope = json.loads(raw)
-        except Exception as exc:
-            self._reply_error(query, "E_BAD_JSON", f"invalid JSON: {exc}")
-            return None
-        if not isinstance(envelope, dict):
-            self._reply_error(query, "E_BAD_SHAPE", "envelope must be a JSON object")
-            return None
-        # Accept both wire formats:
-        #   flat   (bubbaloop daemon ≥ PR #80): {"command": "...", ...top-level params}
-        #   nested (older daemons / direct callers): {"command": "...", "params": {...}}
-        # Robust to deployment drift — same recorder works against any daemon version.
-        nested = envelope.get("params")
-        if isinstance(nested, dict):
-            cmd = envelope.get("command")
-            envelope = {**nested, "command": cmd}
-        return envelope
-
     # ------------------------------------------------------------------
     # Handlers
     # ------------------------------------------------------------------
@@ -220,18 +146,18 @@ class RecorderNode:
                 )
                 return
             try:
-                params = _resolve_start_params(envelope, self._defaults)
+                params: StartParams = resolve_start_params(envelope, self._defaults)
             except ValueError as exc:
                 self._reply_error(query, "E_INVALID_PARAMS", str(exc))
                 return
-            params["output_dir"].mkdir(parents=True, exist_ok=True)
+            params.output_dir.mkdir(parents=True, exist_ok=True)
             session = RecordingSession(
                 zenoh_session=self._ctx.session,
-                topic_patterns=params["topic_patterns"],
-                output_dir=params["output_dir"],
-                chunk_duration_secs=params["chunk_duration_secs"],
-                chunk_max_bytes=params["chunk_max_bytes"],
-                decode_timestamps=params["decode_timestamps"],
+                topic_patterns=list(params.topic_patterns),
+                output_dir=params.output_dir,
+                chunk_duration_secs=params.chunk_duration_secs,
+                chunk_max_bytes=params.chunk_max_bytes,
+                decode_timestamps=params.decode_timestamps,
             )
             session.start()
             self._active = session
@@ -240,8 +166,8 @@ class RecorderNode:
             {
                 "status": "started",
                 "session_id": session.session_id,
-                "topic_patterns": params["topic_patterns"],
-                "output_dir": str(params["output_dir"]),
+                "topic_patterns": list(params.topic_patterns),
+                "output_dir": str(params.output_dir),
             },
         )
 

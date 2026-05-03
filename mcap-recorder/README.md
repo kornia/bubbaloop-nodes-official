@@ -1,8 +1,10 @@
 # mcap-recorder
 
-Records Zenoh CBOR/JSON/raw traffic into chunked MCAP files. Pure-Python sibling of [`recorder/`](../recorder), designed to install easily on Mac/Linux laptops and servers without a Rust toolchain.
+Command-driven Python node that records Zenoh CBOR/JSON/raw traffic into chunked MCAP files. Installs without a Rust toolchain — pure Python via pixi, runs on Linux and macOS.
 
 ## What it does
+
+The process starts clean (no recording). Recording sessions begin and end on commands sent to its Zenoh `command` queryable.
 
 Subscribes to one or more Zenoh key patterns and writes MCAP chunks to disk:
 
@@ -13,26 +15,26 @@ Subscribes to one or more Zenoh key patterns and writes MCAP chunks to disk:
 | `application/protobuf;<name>` | `protobuf` | bytes recorded; no schema fetch in v0.1 |
 | (empty / raw) | `""` | opaque bytes |
 
-CBOR is the dominant encoding on bubbaloop today (see [oak-camera](../../bubbaloop-nodes-official/oak-camera/main.py), [openmeteo](../../bubbaloop-nodes-official/openmeteo/main.py)). Because CBOR is structurally self-describing, no schema-discovery wait is required before recording starts — unlike the Rust recorder, which spends 6.5s scanning health heartbeats.
+CBOR is the canonical encoding on bubbaloop today — see `docs/concepts/wire-format.md` upstream. Because CBOR is structurally self-describing, no schema-discovery wait is required before recording starts.
 
-## Install (Mac, Linux)
+## Install
 
 ```bash
-cd bubbaloop-nodes-internal/recorder-py
+cd bubbaloop-nodes-official/mcap-recorder
 pixi install
 ```
 
-`pixi.toml` lists `osx-arm64` / `osx-64` so resolve works on Apple Silicon and Intel Macs.
+`pixi.toml` lists `osx-arm64` / `osx-64` so resolve works on Apple Silicon and Intel Macs as well as Linux.
 
 ## Configure
 
-Edit `config.yaml`:
+`config.yaml` carries *defaults* — every field is also overridable per `start_recording` command:
 
 ```yaml
-name: recorder-py
+name: mcap-recorder
 topic_patterns:
   - "bubbaloop/global/**"                 # all global traffic
-  # - "bubbaloop/local/**"                # SHM, same-machine only (Linux/Jetson)
+  # - "bubbaloop/local/**"                # SHM, same-machine only (Linux)
   # - "bubbaloop/global/*/oak-camera/compressed"
 output_dir: /tmp/bubbaloop-recordings
 chunk_duration_secs: 300
@@ -40,23 +42,42 @@ chunk_max_bytes: 1073741824               # 1 GiB
 decode_timestamps: false                  # opt-in: parse CBOR header for ts_ns
 ```
 
-## Run
-
-Standalone (for testing):
+## Register and run via bubbaloop
 
 ```bash
-pixi run main -c config.yaml
+bubbaloop node add /abs/path/to/mcap-recorder \
+  -n mcap-recorder \
+  -c /abs/path/to/mcap-recorder/config.yaml
+bubbaloop node install mcap-recorder
+bubbaloop node start mcap-recorder
 ```
 
-Or register with the bubbaloop daemon:
+The node starts idle. Drive it with the bubbaloop MCP plugin's `node_command_send` tool:
 
-```bash
-bubbaloop node add /abs/path/to/recorder-py -n recorder-py -c /abs/path/to/recorder-py/config.yaml
-bubbaloop node install recorder-py
-bubbaloop node start recorder-py
+```jsonc
+// start a recording (any field omitted → use config.yaml default)
+{ "command": "start_recording",
+  "topic_patterns": ["bubbaloop/global/*/tapo_terrace_camera/**"],
+  "output_dir": "/data/terrace-2026-05-03",
+  "chunk_duration_secs": 60 }
+
+// stop & finalise the active session
+{ "command": "stop_recording" }
+
+// query state — "idle" or "recording" with counters
+{ "command": "get_status" }
 ```
 
-Stop with `SIGINT` (Ctrl-C) when running directly, or `bubbaloop node stop recorder-py`. The current chunk is finalized cleanly on shutdown.
+Replies are JSON. Errors are `{ "status": "error", "code": "E_*", "message": "..." }`.
+
+| Code | Meaning |
+|---|---|
+| `E_ALREADY_RECORDING` | session active — call `stop_recording` first |
+| `E_INVALID_PARAMS` | bad merge of request + defaults |
+| `E_UNKNOWN_CMD` | unsupported `command` value |
+| `E_BAD_JSON` / `E_BAD_SHAPE` / `E_EMPTY` | wire-format problems |
+
+The recorder accepts both flat (bubbaloop ≥ PR #80) and nested (`{params: {...}}`) envelopes, so it works against old and new daemons without coordination.
 
 ## Output
 
@@ -84,18 +105,6 @@ Or load into Foxglove Studio (it reads `message_encoding="cbor"` natively).
 pixi run -e dev test
 ```
 
-## Comparison with `recorder/` (Rust)
-
-| Aspect | recorder/ (Rust) | recorder-py/ |
-|---|---|---|
-| Build toolchain | Cargo + bubbaloop-node git dep | pixi (no compile) |
-| Mac install | rustup + cargo build | pixi install |
-| Schema discovery on start | 6.5s heartbeat scan + per-node fetch | none (CBOR is self-describing) |
-| Start/Stop interface | Zenoh queryable (Start/Stop/Status JSON) | config-driven, SIGINT to stop |
-| Timestamps | wall-clock at recv | wall-clock; opt-in publisher `ts_ns` |
-| Chunk rotation | size + duration | size + duration |
-| `.active` rename pattern | yes | yes |
-
 ## Architecture
 
 ```
@@ -109,3 +118,11 @@ pixi run -e dev test
 ```
 
 The bridge from Zenoh threads → single writer thread is required because the `mcap` Python writer is not thread-safe. Subscriber callbacks stay cheap (one tuple put per sample); the writer thread does encoding routing and disk I/O.
+
+| Module | Responsibility |
+|---|---|
+| `recorder/node.py` | command queryable + dispatch |
+| `recorder/commands.py` | envelope parsing (flat + nested wire formats) |
+| `recorder/config.py` | `Defaults` / `StartParams` validation |
+| `recorder/session.py` | subscribers + writer thread bridge |
+| `recorder/mcap_writer.py` | `ChunkedMcapWriter` with `.active` → `.mcap` rename |
