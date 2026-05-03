@@ -4,10 +4,11 @@ The process starts clean (no recording). It declares a Zenoh `command`
 queryable and serves three commands sent via the bubbaloop MCP plugin's
 `node_command_send` tool (or directly via Zenoh):
 
-  start_recording { topic_patterns, output_dir,
+  start_recording { topic_patterns,
                     chunk_duration_secs?, chunk_max_bytes?, decode_timestamps? }
-      Begins a new session. `topic_patterns` and `output_dir` are required;
-      the rest fall back to code-level defaults (see config.py).
+      Begins a new session. `topic_patterns` is required; chunking knobs
+      fall back to code-level defaults (see config.py). `output_dir` is
+      install-time, lives in config.yaml — not overridable per session.
       Errors `E_ALREADY_RECORDING` if a session is already active.
 
   stop_recording {}
@@ -67,7 +68,11 @@ class RecorderNode:
         # shutdown path don't race.
         self._lock = threading.Lock()
         self._active: Optional[RecordingSession] = None
-        log.info("mcap-recorder ready (command-driven), name=%s", self._config.name)
+        log.info(
+            "mcap-recorder ready (command-driven), name=%s output_dir=%s",
+            self._config.name,
+            self._config.output_dir,
+        )
 
     def run(self) -> None:
         machine_id = _resolve_machine_id(self._ctx)
@@ -147,11 +152,12 @@ class RecorderNode:
             except ValueError as exc:
                 self._reply_error(query, "E_INVALID_PARAMS", str(exc))
                 return
-            params.output_dir.mkdir(parents=True, exist_ok=True)
+            output_dir = self._config.output_dir
+            output_dir.mkdir(parents=True, exist_ok=True)
             session = RecordingSession(
                 zenoh_session=self._ctx.session,
                 topic_patterns=list(params.topic_patterns),
-                output_dir=params.output_dir,
+                output_dir=output_dir,
                 chunk_duration_secs=params.chunk_duration_secs,
                 chunk_max_bytes=params.chunk_max_bytes,
                 decode_timestamps=params.decode_timestamps,
@@ -164,7 +170,7 @@ class RecorderNode:
                 "status": "started",
                 "session_id": session.session_id,
                 "topic_patterns": list(params.topic_patterns),
-                "output_dir": str(params.output_dir),
+                "output_dir": str(output_dir),
             },
         )
 

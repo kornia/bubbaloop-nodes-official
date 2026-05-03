@@ -28,16 +28,18 @@ pixi install
 
 ## Configure
 
-`config.yaml` carries one field — `name`, the Zenoh prefix the recorder declares its `command` queryable under. Recording parameters are passed per-session in the `start_recording` command (see below):
+`config.yaml` carries the install-time fields — node identity and where chunks land on this machine:
 
 ```yaml
 name: mcap-recorder
+output_dir: /var/lib/bubbaloop/recordings
 ```
 
 | Param | Where it comes from |
 |---|---|
-| `name` | `config.yaml` (required at boot) |
-| `topic_patterns`, `output_dir` | `start_recording` command — required, no default |
+| `name` | `config.yaml` (required at boot — used as the Zenoh prefix) |
+| `output_dir` | `config.yaml` (required at install — disk is per-machine) |
+| `topic_patterns` | `start_recording` command — required, no default |
 | `chunk_duration_secs` (default 300), `chunk_max_bytes` (default 1 GiB), `decode_timestamps` (default false) | `start_recording` command — code defaults if omitted |
 
 ## Register and run via bubbaloop
@@ -53,10 +55,9 @@ bubbaloop node start mcap-recorder
 The node starts idle. Drive it with the bubbaloop MCP plugin's `node_command_send` tool:
 
 ```jsonc
-// start a recording (any field omitted → use config.yaml default)
+// start a recording (omit chunking knobs → code defaults)
 { "command": "start_recording",
   "topic_patterns": ["bubbaloop/global/*/tapo_terrace_camera/**"],
-  "output_dir": "/data/terrace-2026-05-03",
   "chunk_duration_secs": 60 }
 
 // stop & finalise the active session
