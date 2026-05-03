@@ -18,3 +18,10 @@ requires:
     - gst-plugins-base
     - gst-plugins-good
     - gst-rtsp-server
+
+# Baked into the systemd unit at install time. The Rust binary loads
+# pixi-installed GStreamer, but the NVIDIA Jetson accelerators
+# (nvv4l2decoder, etc.) only live in the host plugin dir — list both so
+# `hw_accel: nvidia` configs work without `pixi run` wrapping.
+environment:
+  GST_PLUGIN_PATH: /usr/lib/aarch64-linux-gnu/gstreamer-1.0:/home/nvidia/bubbaloop-nodes-official/rtsp-camera/.pixi/envs/default/lib/gstreamer-1.0
