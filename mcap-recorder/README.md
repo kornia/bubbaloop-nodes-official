@@ -72,7 +72,7 @@ Replies are JSON. Errors are `{ "status": "error", "code": "E_*", "message": "..
 | Code | Meaning |
 |---|---|
 | `E_ALREADY_RECORDING` | session active — call `stop_recording` first |
-| `E_INVALID_PARAMS` | bad merge of request + defaults |
+| `E_INVALID_PARAMS` | command failed validation (missing `topic_patterns`, bad chunk knob, etc.) |
 | `E_UNKNOWN_CMD` | unsupported `command` value |
 | `E_BAD_JSON` / `E_BAD_SHAPE` / `E_EMPTY` | wire-format problems |
 
