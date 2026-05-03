@@ -1,0 +1,7 @@
+name: mcap-recorder
+topic_patterns:
+  - "bubbaloop/global/*/tapo_terrace_camera/**"
+output_dir: /tmp/bubbaloop-recordings/terrace-final
+chunk_duration_secs: 60
+chunk_max_bytes: 134217728
+decode_timestamps: false
