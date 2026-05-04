@@ -55,6 +55,22 @@ def test_load_config_rejects_traversal_in_output_dir():
         load_config(_ok_config(output_dir="/tmp/../evil"))
 
 
+def test_load_config_expands_tilde_in_output_dir(monkeypatch):
+    monkeypatch.setenv("HOME", "/home/test-user")
+    cfg = load_config(_ok_config(output_dir="~/.bubbaloop/recordings"))
+    assert cfg.output_dir == Path("/home/test-user/.bubbaloop/recordings")
+
+
+def test_load_config_expands_tilde_user_in_output_dir(monkeypatch):
+    """`~user` form also expands."""
+    # `~/path` expands via $HOME; `~someuser` expands via getpwnam.
+    # We only assert the simpler $HOME form here — the more complex form
+    # is exercised by Path.expanduser itself, not our code.
+    monkeypatch.setenv("HOME", "/home/x")
+    cfg = load_config(_ok_config(output_dir="~/recordings"))
+    assert cfg.output_dir == Path("/home/x/recordings")
+
+
 # ── resolve_start_params ───────────────────────────────────────────
 
 

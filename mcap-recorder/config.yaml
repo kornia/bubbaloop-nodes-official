@@ -2,10 +2,16 @@
 #
 # `name`       — Zenoh prefix the recorder declares its `command` queryable
 #                under (must be known before any command can be received).
-# `output_dir` — absolute path where MCAP chunks are written. Disk is per
-#                machine; set this when installing the node, not per session.
+# `output_dir` — path where MCAP chunks are written. `~` expands. Default is
+#                user-writable so a fresh install works without sudo. Override
+#                to a system path (e.g. /var/lib/bubbaloop/recordings) only if
+#                you've created and chown'd the directory yourself AND you've
+#                added it to `ReadWritePaths=` in the systemd unit (the daemon's
+#                generated unit has `ProtectHome=read-only` + `ProtectSystem=strict`).
+#                Disk is per-machine; set this when installing the node, not
+#                per session.
 #
 # Per-session params (`topic_patterns`, chunking knobs, `decode_timestamps`)
 # are passed in the `start_recording` command. See README.md.
 name: mcap-recorder
-output_dir: /var/lib/bubbaloop/recordings
+output_dir: ~/.bubbaloop/recordings

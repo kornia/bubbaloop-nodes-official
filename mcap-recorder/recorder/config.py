@@ -49,14 +49,18 @@ def load_config(cfg: Mapping[str, object]) -> NodeConfig:
 
     output_dir = cfg.get("output_dir")
     if not isinstance(output_dir, str) or not output_dir:
-        raise ValueError("config.output_dir is required (absolute path)")
-    out_path = Path(output_dir)
-    if not out_path.is_absolute():
-        raise ValueError("config.output_dir must be an absolute path")
-    if ".." in out_path.parts:
+        raise ValueError("config.output_dir is required (absolute path or `~/...`)")
+    # Expand `~` and `~user` so user-writable defaults work without sudo.
+    expanded = Path(output_dir).expanduser()
+    if not expanded.is_absolute():
+        raise ValueError(
+            f"config.output_dir must resolve to an absolute path "
+            f"(got {output_dir!r} → {expanded!r})"
+        )
+    if ".." in expanded.parts:
         raise ValueError("config.output_dir must not contain '..'")
 
-    return NodeConfig(name=name, output_dir=out_path)
+    return NodeConfig(name=name, output_dir=expanded)
 
 
 def resolve_start_params(params: Mapping[str, object]) -> StartParams:
