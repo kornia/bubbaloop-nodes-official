@@ -18,3 +18,18 @@ requires:
     - gst-plugins-base
     - gst-plugins-good
     - gst-rtsp-server
+
+# Note on `hw_accel: nvidia` configs (Jetson):
+#
+# `nvv4l2decoder` lives in the host plugin dir
+# (/usr/lib/<arch>/gstreamer-1.0/) but the binary built via `pixi run build`
+# loads pixi's GStreamer ABI. Listing BOTH plugin paths in `GST_PLUGIN_PATH`
+# crashes on duplicate type registration (`GstVideoScale`).
+#
+# Pick one ABI per deployment:
+#   * Pixi-only (default; portable):  `hw_accel: cpu` in your config.yaml.
+#   * Host GStreamer (Jetson-fast):   build with system gstreamer crates
+#     (drop the pixi wrapper for this node), then add:
+#         environment:
+#           GST_PLUGIN_PATH: /usr/lib/aarch64-linux-gnu/gstreamer-1.0
+#     This uses bubbaloop's env-baking (kornia/bubbaloop PR #85).

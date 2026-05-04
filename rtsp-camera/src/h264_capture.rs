@@ -2,6 +2,12 @@ use crate::config::HwAccel;
 use gstreamer::prelude::*;
 use thiserror::Error;
 
+/// True if the running GStreamer registry has a factory for `factory_name`.
+/// Cheap (registry lookup, no instantiation).
+fn gst_element_available(factory_name: &str) -> bool {
+    gstreamer::ElementFactory::find(factory_name).is_some()
+}
+
 #[derive(Debug, Error)]
 pub enum H264CaptureError {
     #[error("GStreamer error: {0}")]
@@ -76,7 +82,24 @@ impl H264StreamCapture {
         // RGBA decode branch differs by hw_accel:
         //   nvidia — nvv4l2decoder ! nvvidconv (Jetson VIC, hardware decode + scale)
         //   cpu    — avdec_h264 ! videoconvert ! videoscale (software, portable)
-        let rgba_branch = match hw_accel {
+        //
+        // If `nvidia` is requested but `nvv4l2decoder` is not available in the
+        // GStreamer registry (most non-Jetson hosts; also Jetson hosts where
+        // the binary was built against a GStreamer ABI that doesn't see the
+        // host-installed NVIDIA plugins) — fall back to CPU with a warning
+        // so the node still runs.
+        let effective = match hw_accel {
+            HwAccel::Nvidia if !gst_element_available("nvv4l2decoder") => {
+                log::warn!(
+                    "hw_accel=nvidia requested but `nvv4l2decoder` is not registered in this \
+                     GStreamer; falling back to CPU decode. To use Jetson hardware decode, \
+                     ensure the binary loads the host GStreamer ABI (see node.yaml note)."
+                );
+                HwAccel::Cpu
+            }
+            other => other,
+        };
+        let rgba_branch = match effective {
             HwAccel::Nvidia => format!(
                 "nvv4l2decoder ! nvvidconv ! \
                  video/x-raw,format=RGBA,width={raw_width},height={raw_height}"

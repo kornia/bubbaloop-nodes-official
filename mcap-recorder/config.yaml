@@ -1,0 +1,11 @@
+# mcap-recorder install config.
+#
+# `name`       — Zenoh prefix the recorder declares its `command` queryable
+#                under (must be known before any command can be received).
+# `output_dir` — absolute path where MCAP chunks are written. Disk is per
+#                machine; set this when installing the node, not per session.
+#
+# Per-session params (`topic_patterns`, chunking knobs, `decode_timestamps`)
+# are passed in the `start_recording` command. See README.md.
+name: mcap-recorder
+output_dir: /var/lib/bubbaloop/recordings
