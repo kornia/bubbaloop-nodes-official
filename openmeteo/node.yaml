@@ -3,7 +3,7 @@ version: "0.2.0"
 type: python
 description: Open-Meteo weather data publisher (JSON)
 author: Bubbaloop Team
-command: pixi run main
+command: pixi run main -c configs/config.yaml
 
 capabilities:
   - sensor

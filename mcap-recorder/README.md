@@ -32,15 +32,29 @@ pixi install
 
 ```yaml
 name: mcap-recorder
-output_dir: /var/lib/bubbaloop/recordings
+output_dir: ~/.bubbaloop/recordings
 ```
+
+`~` expands at load. The default `~/.bubbaloop/recordings` is user-writable so a fresh install works without sudo.
 
 | Param | Where it comes from |
 |---|---|
 | `name` | `config.yaml` (required at boot — used as the Zenoh prefix) |
-| `output_dir` | `config.yaml` (required at install — disk is per-machine) |
+| `output_dir` | `config.yaml` (required at install — disk is per-machine; `~` expands) |
 | `topic_patterns` | `start_recording` command — required, no default |
 | `chunk_duration_secs` (default 300), `chunk_max_bytes` (default 1 GiB), `decode_timestamps` (default false) | `start_recording` command — code defaults if omitted |
+
+### Hardening / output_dir interaction
+
+The bubbaloop daemon emits `ProtectHome=read-only` and `ProtectSystem=strict` in the generated systemd unit (Python sandbox). These block writes everywhere except `/dev`, `/proc`, `/sys`. To make `output_dir` writable at runtime, the unit needs a `ReadWritePaths=<output_dir>` line — but the daemon's unit template doesn't expose that yet (tracked as a feature gap; until then, edit the unit by hand after install):
+
+```bash
+sed -i "s|^ProtectSystem=strict|ProtectSystem=strict\nReadWritePaths=$(yq -r .output_dir ~/.bubbaloop/configs/mcap-recorder.yaml)|" \
+  ~/.config/systemd/user/bubbaloop-mcap-recorder.service
+systemctl --user daemon-reload && systemctl --user restart bubbaloop-mcap-recorder
+```
+
+Or pick a non-`/home` path (e.g. `/var/lib/bubbaloop/recordings`) and create+chown it with sudo first.
 
 ## Register and run via bubbaloop
 
