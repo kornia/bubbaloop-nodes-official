@@ -54,6 +54,15 @@ nodes:
     repo: kornia/bubbaloop-nodes-official
     subdir: camera-vlm
 
+  - name: webcam-camera
+    description: "USB/V4L2 webcam publisher — OpenCV capture, kornia-rs JPEG encoding"
+    version: "0.1.0"
+    type: python
+    category: camera
+    tags: [sensor, camera, usb, v4l2, jpeg, opencv]
+    repo: kornia/bubbaloop-nodes-official
+    subdir: webcam-camera
+
   - name: oak-camera
     description: "OAK (Luxonis) depth camera — RGB pub + depth-at-bbox queryable"
     version: "0.1.0"
