@@ -121,7 +121,7 @@ class WebcamCameraNode:
                 continue
 
             self._compressed_pub.put(
-                {"width": w, "height": h, "encoding": "jpeg", "data": jpeg.tobytes()}
+                {"width": w, "height": h, "encoding": "jpeg", "seq": self._seq, "data": jpeg.tobytes()}
             )
             self._seq += 1
 
