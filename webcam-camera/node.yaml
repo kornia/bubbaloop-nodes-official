@@ -1,0 +1,17 @@
+name: webcam-camera
+version: "0.1.0"
+type: python
+description: USB/V4L2 webcam publisher — captures frames with OpenCV and publishes compressed JPEG over the network
+author: Bubbaloop Team
+
+command: pixi run main
+
+capabilities:
+  - sensor
+
+requires:
+  hardware:
+    - USB webcam or V4L2-compatible camera (e.g. /dev/video0)
+  software:
+    - Python 3.10+
+    - OpenCV 4.8+ (with V4L2 backend)
