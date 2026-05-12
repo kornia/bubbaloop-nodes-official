@@ -11,6 +11,7 @@ import logging
 import re
 
 import cv2
+import kornia_rs as K
 
 log = logging.getLogger("webcam-camera")
 
@@ -69,6 +70,8 @@ class WebcamCameraNode:
         self._compressed_pub = ctx.publisher_cbor(
             "compressed", schema_uri="bubbaloop://compressed/v1"
         )
+        self._encoder = K.io.ImageEncoder()
+        self._encoder.set_quality(self._cfg["jpeg_quality"])
         self._seq = 0
         log.info("Configured: %s", self._cfg)
         log.info("compressed → %s", ctx.topic("compressed"))
@@ -113,12 +116,8 @@ class WebcamCameraNode:
             consecutive_failures = 0
 
             h, w = bgr.shape[:2]
-            ok2, jpeg = cv2.imencode(
-                ".jpg", bgr, [cv2.IMWRITE_JPEG_QUALITY, self._cfg["jpeg_quality"]]
-            )
-            if not ok2:
-                log.warning("imencode failed on frame %d — skipping", self._seq)
-                continue
+            rgb = K.imgproc.bgr_from_rgb(bgr)
+            jpeg = self._encoder.encode(rgb)
 
             self._compressed_pub.put(
                 {"width": w, "height": h, "encoding": "jpeg", "seq": self._seq, "data": jpeg.tobytes()}

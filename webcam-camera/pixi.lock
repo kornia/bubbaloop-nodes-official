@@ -29,10 +29,11 @@ environments:
       - conda: https://conda.anaconda.org/conda-forge/linux-64/tk-8.6.13-noxft_h366c992_103.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/tzdata-2025c-hc9c84f9_1.conda
       - conda: https://conda.anaconda.org/conda-forge/linux-64/zstd-1.5.7-hb78ec9c_6.conda
-      - pypi: git+https://github.com/kornia/bubbaloop.git?subdirectory=python-sdk&branch=main#a0c395c62fe944bcbdb0decd031961ff53a95e78
+      - pypi: git+https://github.com/kornia/bubbaloop.git?subdirectory=python-sdk&branch=main#d03efba70668a6342c5b26082bd294955105bdad
       - pypi: https://files.pythonhosted.org/packages/f2/93/a7ff418ae1dc40ea06093550c5a6a7c20df602d4a75bd17f11b83c8344c3/cbor2-6.0.1-cp314-cp314-manylinux_2_28_x86_64.whl
       - pypi: https://files.pythonhosted.org/packages/58/1b/2a074d4f4595bd37c3d12f1b2ad49bceef5c8cd0962cbfd97d1d39f32e1f/eclipse_zenoh-1.9.0-cp39-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl
       - pypi: https://files.pythonhosted.org/packages/cb/b1/3846dd7f199d53cb17f49cba7e651e9ce294d8497c8c150530ed11865bb8/iniconfig-2.3.0-py3-none-any.whl
+      - pypi: https://files.pythonhosted.org/packages/36/4c/fd4d29ea38392dbb415bc314080e2facdd0879bde9a30cd9773ad48d386e/kornia_rs-0.1.11-cp314-cp314-manylinux_2_17_x86_64.manylinux2014_x86_64.whl
       - pypi: https://files.pythonhosted.org/packages/98/7c/21252050676612625449b4807d6b695b9ce8a7c9e1c197ee6216c8a65c7c/numpy-2.4.4-cp314-cp314-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl
       - pypi: https://files.pythonhosted.org/packages/fd/55/b3b49a1b97aabcfbbd6c7326df9cb0b6fa0c0aefa8e89d500939e04aa229/opencv_python-4.13.0.92-cp37-abi3-manylinux_2_28_x86_64.whl
       - pypi: https://files.pythonhosted.org/packages/df/b2/87e62e8c3e2f4b32e5fe99e0b86d576da1312593b39f47d8ceef365e95ed/packaging-26.2-py3-none-any.whl
@@ -63,10 +64,11 @@ environments:
       - conda: https://conda.anaconda.org/conda-forge/linux-aarch64/tk-8.6.13-noxft_h0dc03b3_103.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/tzdata-2025c-hc9c84f9_1.conda
       - conda: https://conda.anaconda.org/conda-forge/linux-aarch64/zstd-1.5.7-h85ac4a6_6.conda
-      - pypi: git+https://github.com/kornia/bubbaloop.git?subdirectory=python-sdk&branch=main#a0c395c62fe944bcbdb0decd031961ff53a95e78
+      - pypi: git+https://github.com/kornia/bubbaloop.git?subdirectory=python-sdk&branch=main#d03efba70668a6342c5b26082bd294955105bdad
       - pypi: https://files.pythonhosted.org/packages/66/16/84b689706815f45a702c90043260f3588b6c75c188e0a6d47ff8b0d98b4e/cbor2-6.0.1-cp314-cp314-manylinux_2_28_aarch64.whl
       - pypi: https://files.pythonhosted.org/packages/ab/33/c3116f1bf7647ee0ea8972efbe0fe5710ae75ea7226440a8fda7f04a4cbc/eclipse_zenoh-1.9.0-cp39-abi3-manylinux_2_28_aarch64.whl
       - pypi: https://files.pythonhosted.org/packages/cb/b1/3846dd7f199d53cb17f49cba7e651e9ce294d8497c8c150530ed11865bb8/iniconfig-2.3.0-py3-none-any.whl
+      - pypi: https://files.pythonhosted.org/packages/db/bc/b95d9fbfa11724480400eeab6215c0c84468ee39aaa72972521e5759046c/kornia_rs-0.1.11-cp314-cp314-manylinux_2_17_aarch64.manylinux2014_aarch64.whl
       - pypi: https://files.pythonhosted.org/packages/44/5d/e7e9044032a716cdfaa3fba27a8e874bf1c5f1912a1ddd4ed071bf8a14a6/numpy-2.4.4-cp314-cp314-manylinux_2_27_aarch64.manylinux_2_28_aarch64.whl
       - pypi: https://files.pythonhosted.org/packages/02/6d/7a9cc719b3eaf4377b9c2e3edeb7ed3a81de41f96421510c0a169ca3cfd4/opencv_python-4.13.0.92-cp37-abi3-manylinux_2_28_aarch64.whl
       - pypi: https://files.pythonhosted.org/packages/df/b2/87e62e8c3e2f4b32e5fe99e0b86d576da1312593b39f47d8ceef365e95ed/packaging-26.2-py3-none-any.whl
@@ -102,7 +104,7 @@ packages:
   purls: []
   size: 28926
   timestamp: 1770939656741
-- pypi: git+https://github.com/kornia/bubbaloop.git?subdirectory=python-sdk&branch=main#a0c395c62fe944bcbdb0decd031961ff53a95e78
+- pypi: git+https://github.com/kornia/bubbaloop.git?subdirectory=python-sdk&branch=main#d03efba70668a6342c5b26082bd294955105bdad
   name: bubbaloop-sdk
   version: 0.1.0
   requires_dist:
@@ -168,6 +170,26 @@ packages:
   version: 2.3.0
   sha256: f631c04d2c48c52b84d0d0549c99ff3859c98df65b3101406327ecc7d53fbf12
   requires_python: '>=3.10'
+- pypi: https://files.pythonhosted.org/packages/36/4c/fd4d29ea38392dbb415bc314080e2facdd0879bde9a30cd9773ad48d386e/kornia_rs-0.1.11-cp314-cp314-manylinux_2_17_x86_64.manylinux2014_x86_64.whl
+  name: kornia-rs
+  version: 0.1.11
+  sha256: 897b5e3d4ae9014ff7b56dd002db537ce695110063a02c2f1d983165a7d40fd0
+  requires_dist:
+  - pytest ; extra == 'dev'
+  - pytest-run-parallel ; extra == 'dev'
+  - numpy ; extra == 'dev'
+  - torch ; extra == 'dev'
+  requires_python: '>=3.8'
+- pypi: https://files.pythonhosted.org/packages/db/bc/b95d9fbfa11724480400eeab6215c0c84468ee39aaa72972521e5759046c/kornia_rs-0.1.11-cp314-cp314-manylinux_2_17_aarch64.manylinux2014_aarch64.whl
+  name: kornia-rs
+  version: 0.1.11
+  sha256: 9837927766aff4a65e9fdb1e24cf7b01557610cbc8b0e8256aef6cc34c8ab20e
+  requires_dist:
+  - pytest ; extra == 'dev'
+  - pytest-run-parallel ; extra == 'dev'
+  - numpy ; extra == 'dev'
+  - torch ; extra == 'dev'
+  requires_python: '>=3.8'
 - conda: https://conda.anaconda.org/conda-forge/linux-64/ld_impl_linux-64-2.45.1-default_hbd61a6d_102.conda
   sha256: 3d584956604909ff5df353767f3a2a2f60e07d070b328d109f30ac40cd62df6c
   md5: 18335a698559cdbcd86150a48bf54ba6
