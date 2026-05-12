@@ -120,7 +120,7 @@ class WebcamCameraNode:
             jpeg = self._encoder.encode(rgb)
 
             self._compressed_pub.put(
-                {"width": w, "height": h, "encoding": "jpeg", "seq": self._seq, "data": jpeg.tobytes()}
+                {"width": w, "height": h, "encoding": "jpeg", "seq": self._seq, "data": jpeg}
             )
             self._seq += 1
 
