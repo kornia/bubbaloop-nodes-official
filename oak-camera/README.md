@@ -21,7 +21,7 @@ Scoped under the `name` from `config.yaml` (default `oak_primary`):
 
 `dai.node.Sync` (running on the OAK's Leon coprocessor — zero host CPU) pairs RGB and depth frames whose mid-shutter timestamps fall within `sync_threshold_ms` (default ≈ half a frame interval). Only matched pairs are emitted; unsynced frames are dropped silently when `sync_attempts: -1`.
 
-The body's `header.acq_time` is the **mid-shutter device clock** of the RGB frame — the depth shares this time within the sync threshold. `header.sync_interval_ns` carries the actual RGB↔depth gap as measured by Sync, so downstream consumers can filter on it:
+The body's `header.acq_time` is the **mid-shutter device clock** of the RGB frame — the depth shares this time within the sync threshold. `header.sync_interval_ns` is the RGB↔depth interval reported by `MessageGroup.getIntervalNs()` (device-clock spread between the two messages, not exposure-aligned), so downstream consumers can filter on drift:
 
 ```python
 if body["header"].get("sync_interval_ns", 0) > 5_000_000:  # >5ms drift

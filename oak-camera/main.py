@@ -283,7 +283,13 @@ class OakCameraNode:
                 try:
                     stereo.setOutputSize(w, h)
                 except AttributeError:
-                    pass
+                    log.warning(
+                        "stereo.setOutputSize unavailable on this depthai build — "
+                        "depth resolution will track mono cameras (640x400) instead "
+                        "of RGB (%dx%d). Calibration topic still describes RGB; "
+                        "depth-to-pointcloud will need a separate scale step.",
+                        w, h,
+                    )
                 depth_out = stereo.depth
                 log.info("Stereo depth enabled, aligned to CAM_A, %dx%d", w, h)
             except Exception as exc:
@@ -353,6 +359,16 @@ class OakCameraNode:
 
                 bgr = rgb_msg.getCvFrame()
                 h, w = bgr.shape[:2]
+
+                # First-frame dimension audit — if the device returned a frame
+                # at a size other than what we requested, the pre-allocated
+                # _rgb_buf / _rgba_buf are wrong and we'd corrupt downstream
+                # consumers. Bail loud rather than ship mismatched bytes.
+                if self._seq == 0 and (h, w) != (cfg["height"], cfg["width"]):
+                    raise RuntimeError(
+                        f"OAK returned RGB frame {w}x{h} but config requested "
+                        f"{cfg['width']}x{cfg['height']} — check sensor config"
+                    )
 
                 depth_frame: np.ndarray | None = None
                 depth_bytes: bytes | None = None
