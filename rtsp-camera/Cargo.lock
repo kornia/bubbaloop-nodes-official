@@ -3059,6 +3059,7 @@ name = "rtsp_camera"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "base64",
  "bubbaloop-node",
  "ciborium",
  "flume 0.12.0",

@@ -1,0 +1,9 @@
+name: webcam_primary
+
+device: 0           # int index (0 = first webcam) or string path "/dev/video0"
+width: 1280
+height: 720
+fps: 30
+
+jpeg_quality: 80    # 1-100
+warn_on_param_mismatch: true

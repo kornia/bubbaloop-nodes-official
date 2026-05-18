@@ -18,7 +18,7 @@ jobs:
 
       - name: Check node.yaml exists for all nodes
         run: |
-          expected="network-monitor openmeteo rtsp-camera system-telemetry camera-object-detector camera-vlm"
+          expected="network-monitor openmeteo rtsp-camera system-telemetry camera-object-detector camera-vlm webcam-camera"
           for node in $expected; do
             if [ ! -f "$node/node.yaml" ]; then
               echo "ERROR: $node/node.yaml missing"
@@ -33,7 +33,7 @@ jobs:
             echo "ERROR: nodes.yaml missing"
             exit 1
           fi
-          for node in rtsp-camera openmeteo system-telemetry network-monitor camera-object-detector camera-vlm; do
+          for node in rtsp-camera openmeteo system-telemetry network-monitor camera-object-detector camera-vlm webcam-camera; do
             if ! grep -q "name: $node" nodes.yaml; then
               echo "ERROR: $node not found in nodes.yaml"
               exit 1
@@ -80,6 +80,7 @@ jobs:
           - openmeteo
           - system-telemetry
           - network-monitor
+          - webcam-camera
     steps:
       - uses: actions/checkout@v4
 
@@ -91,3 +92,10 @@ jobs:
       - name: Syntax check
         working-directory: ${{ matrix.node }}
         run: pixi run python -m py_compile main.py
+
+      - name: Unit tests
+        working-directory: ${{ matrix.node }}
+        run: |
+          if [ -d tests ]; then
+            pixi run python -m pytest tests/ -v
+          fi
