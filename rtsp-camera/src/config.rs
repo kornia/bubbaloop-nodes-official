@@ -17,9 +17,8 @@ pub enum HwAccel {
 /// Configuration for a single RTSP camera instance
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Config {
-    /// Unique name for this camera instance (must end with `_camera`, e.g. `tapo_entrance_camera`).
-    /// The topic key is derived by stripping the `_camera` suffix:
-    /// `tapo_entrance_camera` → topics `tapo_entrance/compressed` and `tapo_entrance/raw`.
+    /// Unique name for this camera instance (e.g. `tapo_entrance`).
+    /// Used directly as the topic namespace: `{name}/compressed`, `{name}/raw`, `{name}/grab_frame`.
     pub name: String,
     /// RTSP URL (e.g., rtsp://user:pass@192.168.1.10:554/stream)
     pub url: String,
@@ -67,16 +66,6 @@ impl Config {
             serde_yaml::from_str(yaml).map_err(|e| ConfigError::ParseError(e.to_string()))?;
         config.validate()?;
         Ok(config)
-    }
-
-    /// Derive the topic key by stripping the `_camera` suffix from `name`.
-    ///
-    /// `tapo_entrance_camera` → `tapo_entrance`
-    /// Used as: `{key}/compressed`, `{key}/raw`
-    pub fn topic_key(&self) -> &str {
-        self.name
-            .strip_suffix("_camera")
-            .unwrap_or(self.name.as_str())
     }
 
     /// Validate configuration values
@@ -154,43 +143,14 @@ mod tests {
     #[test]
     fn test_parse_config() -> Result<(), ConfigError> {
         let yaml = r#"
-name: tapo_entrance_camera
+name: tapo_entrance
 url: "rtsp://192.168.1.10:554/stream"
 latency: 200
 "#;
         let config = Config::parse(yaml)?;
-        assert_eq!(config.name, "tapo_entrance_camera");
-        assert_eq!(config.topic_key(), "tapo_entrance");
+        assert_eq!(config.name, "tapo_entrance");
         assert_eq!(config.latency, 200);
         Ok(())
-    }
-
-    #[test]
-    fn test_topic_key_strips_camera_suffix() {
-        let config = Config {
-            name: "tapo_terrace_camera".to_string(),
-            url: "rtsp://x".to_string(),
-            latency: 50,
-            frame_rate: None,
-            raw_width: 560,
-            raw_height: 560,
-            hw_accel: HwAccel::Nvidia,
-        };
-        assert_eq!(config.topic_key(), "tapo_terrace");
-    }
-
-    #[test]
-    fn test_topic_key_no_suffix() {
-        let config = Config {
-            name: "my_node".to_string(),
-            url: "rtsp://x".to_string(),
-            latency: 50,
-            frame_rate: None,
-            raw_width: 560,
-            raw_height: 560,
-            hw_accel: HwAccel::Cpu,
-        };
-        assert_eq!(config.topic_key(), "my_node");
     }
 
     #[test]

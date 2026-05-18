@@ -6,7 +6,6 @@
 //! containing base64-encoded JPEG + capture metadata.
 
 use crate::cbor_wire::HeaderCbor;
-use base64::Engine as _;
 use jpeg_encoder::{ColorType, Encoder as JpegEncoder};
 use kornia_image::{Image, ImageSize, allocator::CpuAllocator};
 use kornia_imgproc::{interpolation::InterpolationMode, resize::resize_fast_rgb};
@@ -54,16 +53,20 @@ pub async fn spawn_grab_frame_queryable(
                 result = queryable.recv_async() => {
                     match result {
                         Ok(query) => {
-                            let payload = match encode_reply(&frame_cache) {
-                                Ok(json) => json,
+                            let key = query.key_expr().clone();
+                            match encode_reply(&frame_cache) {
+                                Ok((jpeg, meta)) => {
+                                    if let Err(e) = query.reply(key, jpeg)
+                                        .attachment(meta.as_bytes())
+                                        .await
+                                    {
+                                        log::warn!("grab_frame reply failed: {}", e);
+                                    }
+                                }
                                 Err(e) => {
                                     log::warn!("grab_frame encode failed: {}", e);
-                                    format!("{{\"error\":\"{}\"}}", e)
+                                    let _ = query.reply_err(format!("{}", e)).await;
                                 }
-                            };
-                            let key = query.key_expr().clone();
-                            if let Err(e) = query.reply(key, payload).await {
-                                log::warn!("grab_frame reply failed: {}", e);
                             }
                         }
                         Err(_) => break,
@@ -76,8 +79,9 @@ pub async fn spawn_grab_frame_queryable(
     Ok(handle)
 }
 
-/// Encode the latest cached frame as JPEG and return a JSON string.
-fn encode_reply(cache: &FrameCache) -> anyhow::Result<String> {
+/// Encode the latest cached frame as JPEG.
+/// Returns `(jpeg_bytes, metadata_json)` — payload and attachment are sent separately.
+fn encode_reply(cache: &FrameCache) -> anyhow::Result<(Vec<u8>, String)> {
     let guard = cache.lock().map_err(|_| anyhow::anyhow!("frame cache poisoned"))?;
     let frame = guard
         .as_ref()
@@ -114,8 +118,6 @@ fn encode_reply(cache: &FrameCache) -> anyhow::Result<String> {
         .encode(dst.as_slice(), new_w as u16, new_h as u16, ColorType::Rgb)
         .map_err(|e| anyhow::anyhow!("JPEG encode: {}", e))?;
 
-    let jpeg_b64 = base64::engine::general_purpose::STANDARD.encode(&jpeg_buf);
-
     // Re-acquire lock briefly just to read metadata
     let guard = cache.lock().map_err(|_| anyhow::anyhow!("frame cache poisoned"))?;
     let frame = guard
@@ -137,13 +139,11 @@ fn encode_reply(cache: &FrameCache) -> anyhow::Result<String> {
         frame_id, acq_iso, age_ms, orig_w, orig_h, new_w, new_h
     );
 
-    let json = serde_json::json!({
-        "jpeg_b64": jpeg_b64,
+    let meta = serde_json::json!({
         "media_type": "image/jpeg",
         "label": label,
         "camera": frame_id,
         "machine_id": machine_id,
-        "frame_id": frame_id,
         "sequence": sequence,
         "acq_time_iso": acq_iso,
         "age_ms": age_ms,
@@ -155,7 +155,9 @@ fn encode_reply(cache: &FrameCache) -> anyhow::Result<String> {
         "jpeg_bytes": jpeg_buf.len(),
     });
 
-    Ok(json.to_string())
+    // Payload = raw JPEG bytes; attachment = small JSON metadata.
+    // Avoids ~33% base64 overhead on the wire; daemon base64-encodes locally for the LLM.
+    Ok((jpeg_buf, meta.to_string()))
 }
 
 fn scale_to_long_edge(w: usize, h: usize, max_edge: usize) -> (usize, usize) {

@@ -12,7 +12,6 @@ Topics (auto-scoped under ``config.name``):
 
 from __future__ import annotations
 
-import base64
 import json
 import logging
 import re
@@ -158,7 +157,7 @@ def _grab_frame_worker(
             f"Camera '{frame['instance']}' — captured {acq_iso} ({age_ms}ms ago), "
             f"original {orig_w}×{orig_h} → downsampled {new_w}×{new_h}:"
         )
-        receipt = {
+        meta = {
             "camera": frame["instance"],
             "machine_id": frame["machine_id"],
             "acq_time_iso": acq_iso,
@@ -167,11 +166,13 @@ def _grab_frame_worker(
             "original_height": orig_h,
             "downsampled_width": new_w,
             "downsampled_height": new_h,
-            "jpeg_b64": base64.b64encode(jpeg).decode(),
+            "jpeg_bytes": len(jpeg),
             "media_type": "image/jpeg",
             "label": label,
         }
-        query.reply(query.key_expr, json.dumps(receipt).encode())
+        # Payload = raw JPEG bytes; attachment = small JSON metadata.
+        # Avoids ~33% base64 overhead on the wire; daemon base64-encodes locally for the LLM.
+        query.reply(query.key_expr, bytes(jpeg), attachment=json.dumps(meta).encode())
 
     qable = session.declare_queryable(key_expr, _on_query)
     shutdown_evt.wait()
