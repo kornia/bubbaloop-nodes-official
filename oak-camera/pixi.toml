@@ -14,7 +14,6 @@ pip = "*"
 eclipse-zenoh = ">=1.0"
 pyyaml = ">=6.0"
 depthai = ">=3.0"
-opencv-python = ">=4.8"
 numpy = ">=1.24"
 cbor2 = ">=5.5"
 bubbaloop-sdk = { path = "/home/nvidia/bubbaloop/python-sdk", editable = true }

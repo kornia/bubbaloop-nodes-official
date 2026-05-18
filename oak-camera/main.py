@@ -21,7 +21,6 @@ import threading
 import time
 from datetime import datetime, timedelta, timezone
 
-import cv2
 import depthai as dai
 import kornia_rs as kr
 import numpy as np
@@ -198,9 +197,9 @@ class OakCameraNode:
         self._seq = 0
 
         # Pre-allocated scratch buffer for BGR→RGBA (3.7 MB at 1280×720). Avoids
-        # ~111 MB/s of per-frame allocations at 30 fps.
-        self._rgba_buf = np.empty(
-            (self._cfg["height"], self._cfg["width"], 4), dtype=np.uint8,
+        # ~111 MB/s of per-frame allocations at 30 fps. Alpha pre-filled to 255.
+        self._rgba_buf = np.full(
+            (self._cfg["height"], self._cfg["width"], 4), 255, dtype=np.uint8,
         )
 
         # grab_frame queryable: non-blocking lock keeps the capture loop hot.
@@ -345,7 +344,8 @@ class OakCameraNode:
                     )
                     depth_h, depth_w = depth_frame.shape
 
-                cv2.cvtColor(bgr, cv2.COLOR_BGR2RGBA, dst=self._rgba_buf)
+                # BGR→RGBA: reverse color channels into pre-allocated buffer (alpha stays 255).
+                np.copyto(self._rgba_buf[:, :, :3], bgr[:, :, ::-1])
 
                 # Update grab_frame cache (non-blocking — liveness > consistency).
                 if cfg["enable_grab_frame"] and self._frame_lock.acquire(blocking=False):
