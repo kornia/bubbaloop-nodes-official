@@ -15,10 +15,17 @@ flume = "0.12"
 gstreamer = "0.24"
 gstreamer-app = "0.24"
 serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
 serde_bytes = "0.11"
 serde_yaml = "0.9"
 thiserror = "2.0"
 ciborium = "0.2"
+
+# grab_frame: kornia-rs imgproc + JPEG encode (pure-Rust, no C deps)
+kornia-image = "0.1"
+kornia-imgproc = "0.1"
+jpeg-encoder = "0.6"
+base64 = "0.22"
 
 [[bin]]
 name = "rtsp_camera_node"

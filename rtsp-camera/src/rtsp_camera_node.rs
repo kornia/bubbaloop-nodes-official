@@ -1,17 +1,22 @@
 use crate::cbor_wire::{CompressedImageCborRef, HeaderCbor, RawImageCborRef};
 use crate::config::Config;
+use crate::grab_frame::{CachedFrame, FrameCache, spawn_grab_frame_queryable};
 use crate::h264_capture::H264StreamCapture;
 use bubbaloop_node::{CborPublisher, CborPublisherShm, NodeContext};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
-fn make_header(ctx: &NodeContext, camera_name: &str, acq_time: u64, sequence: u32) -> HeaderCbor {
-    let pub_time = std::time::SystemTime::now()
+fn now_ns() -> u64 {
+    std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_nanos() as u64)
-        .unwrap_or(0);
+        .unwrap_or(0)
+}
+
+fn make_header(ctx: &NodeContext, camera_name: &str, sequence: u32) -> HeaderCbor {
+    let now = now_ns();
     HeaderCbor {
-        acq_time,
-        pub_time,
+        acq_time: now,
+        pub_time: now,
         sequence,
         frame_id: camera_name.to_owned(),
         machine_id: ctx.machine_id.clone(),
@@ -114,6 +119,19 @@ impl bubbaloop_node::Node for RtspCameraNode {
             );
         }
 
+        // Shared cache for the grab_frame queryable
+        let frame_cache: FrameCache = Arc::new(Mutex::new(None));
+
+        // Spawn grab_frame queryable on the local SHM key space
+        let grab_key = ctx.local_topic("grab_frame");
+        let _grab_handle = spawn_grab_frame_queryable(
+            ctx.session.clone(),
+            grab_key,
+            frame_cache.clone(),
+            ctx.shutdown_rx.clone(),
+        )
+        .await?;
+
         let mut shutdown_rx = ctx.shutdown_rx.clone();
         let mut published: u64 = 0;
         let mut raw_published: u64 = 0;
@@ -158,7 +176,7 @@ impl bubbaloop_node::Node for RtspCameraNode {
                                 );
                             }
 
-                            let header = make_header(&ctx, &camera_name, h264_frame.pts, h264_frame.sequence);
+                            let header = make_header(&ctx, &camera_name, h264_frame.sequence);
                             let cbor_msg = CompressedImageCborRef {
                                 header: &header,
                                 format: "h264",
@@ -201,7 +219,7 @@ impl bubbaloop_node::Node for RtspCameraNode {
                 result = capture.rgba_receiver().recv_async() => {
                     match result {
                         Ok(rgba_frame) => {
-                            let header = make_header(&ctx, &camera_name, rgba_frame.pts, rgba_frame.sequence);
+                            let header = make_header(&ctx, &camera_name, rgba_frame.sequence);
                             let raw_msg = RawImageCborRef {
                                 header: &header,
                                 width: raw_width,
@@ -216,6 +234,15 @@ impl bubbaloop_node::Node for RtspCameraNode {
                                 }
                             } else {
                                 raw_published += 1;
+                            }
+                            // Update the grab_frame cache (non-blocking — drop old frame if lock busy)
+                            if let Ok(mut cache) = frame_cache.try_lock() {
+                                *cache = Some(CachedFrame {
+                                    width: raw_width,
+                                    height: raw_height,
+                                    data: rgba_frame.data,
+                                    header,
+                                });
                             }
                         }
                         Err(_) => break,
