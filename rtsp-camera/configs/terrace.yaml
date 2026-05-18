@@ -1,8 +1,7 @@
-name: tapo_terrace_camera
-role: source
+name: tapo_terrace
 url: "rtsp://tapo_terrace:clawd2026@192.168.1.151:554/stream1"
 latency: 50
 frame_rate: 10
-hw_accel: nvidia   # nvidia (Jetson VIC) or cpu (software, portable)
-raw_width: 560     # resize target for SHM raw frames
+hw_accel: nvidia
+raw_width: 560
 raw_height: 560
