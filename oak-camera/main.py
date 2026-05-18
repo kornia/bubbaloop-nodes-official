@@ -4,8 +4,7 @@
 Topics (auto-scoped under ``config.name``):
 
 - ``{name}/compressed``  — global CBOR, body = {width, height, rgb:{encoding:"jpeg", data},
-  depth?:{encoding:"rvl", data}}. depth is present only when enable_depth=true and a
-  depth camera is attached.
+  depth?:{encoding:"rvl", data}}. depth present when a stereo camera is attached.
 - ``{name}/rgbd``        — local SHM CBOR, body = {header, rgb, depth?}.
 - ``{name}/imu``         — global CBOR (opt-in), body = {accel, gyro, timestamp_us}.
 - ``{name}/grab_frame``  — local queryable, returns JPEG receipt JSON on demand.
@@ -69,10 +68,7 @@ def _validate(cfg: dict) -> dict:
         "fps": fps,
         "jpeg_every_n": jpeg_every_n,
         "jpeg_quality": jpeg_quality,
-        "enable_depth": bool(cfg.get("enable_depth", True)),
-        "enable_imu": bool(cfg.get("enable_imu", True)),
         "imu_hz": imu_hz,
-        "enable_grab_frame": bool(cfg.get("enable_grab_frame", True)),
     }
 
 
@@ -191,9 +187,7 @@ class OakCameraNode:
 
         self._compressed_pub = ctx.publisher_cbor("compressed", schema_uri="bubbaloop://compressed/v1")
         self._rgbd_pub = ctx.publisher_cbor("rgbd", local=True, schema_uri="bubbaloop://rgbd/v1")
-        self._imu_pub = (
-            ctx.publisher_cbor("imu") if self._cfg["enable_imu"] else None
-        )
+        self._imu_pub = ctx.publisher_cbor("imu")
         self._seq = 0
 
         # Pre-allocated scratch buffer for BGR→RGBA (3.7 MB at 1280×720). Avoids
@@ -202,25 +196,23 @@ class OakCameraNode:
             (self._cfg["height"], self._cfg["width"], 4), 255, dtype=np.uint8,
         )
 
-        # grab_frame queryable: non-blocking lock keeps the capture loop hot.
+        # grab_frame queryable: serves the latest cached frame on demand.
         self._frame_cache: dict = {}
         self._frame_lock = threading.Lock()
         self._shutdown_evt = threading.Event()
 
-        if self._cfg["enable_grab_frame"]:
-            grab_key = ctx.local_topic("grab_frame")
-            threading.Thread(
-                target=_grab_frame_worker,
-                args=(ctx.session, grab_key, self._frame_cache, self._frame_lock, self._shutdown_evt),
-                daemon=True,
-            ).start()
-            log.info("grab_frame queryable → %s", grab_key)
+        grab_key = ctx.local_topic("grab_frame")
+        threading.Thread(
+            target=_grab_frame_worker,
+            args=(ctx.session, grab_key, self._frame_cache, self._frame_lock, self._shutdown_evt),
+            daemon=True,
+        ).start()
 
         log.info("Configured: %s", self._cfg)
         log.info("compressed → %s", ctx.topic("compressed"))
         log.info("rgbd (SHM) → %s", ctx.local_topic("rgbd"))
-        if self._imu_pub:
-            log.info("imu → %s", ctx.topic("imu"))
+        log.info("imu → %s", ctx.topic("imu"))
+        log.info("grab_frame queryable → %s", grab_key)
 
     def _build_pipeline(self, pipeline: dai.Pipeline):
         """Build DepthAI pipeline.
@@ -241,22 +233,21 @@ class OakCameraNode:
         rgb_out = cam_rgb.requestOutput((w, h), type=dai.ImgFrame.Type.BGR888i, fps=fps)
 
         stereo = None
-        if self._cfg["enable_depth"]:
+        try:
+            mono_left = pipeline.create(dai.node.Camera).build(dai.CameraBoardSocket.CAM_B)
+            mono_right = pipeline.create(dai.node.Camera).build(dai.CameraBoardSocket.CAM_C)
+            stereo = pipeline.create(dai.node.StereoDepth)
+            mono_left.requestOutput((640, 400), fps=fps).link(stereo.left)
+            mono_right.requestOutput((640, 400), fps=fps).link(stereo.right)
+            stereo.setDepthAlign(dai.CameraBoardSocket.CAM_A)
             try:
-                mono_left = pipeline.create(dai.node.Camera).build(dai.CameraBoardSocket.CAM_B)
-                mono_right = pipeline.create(dai.node.Camera).build(dai.CameraBoardSocket.CAM_C)
-                stereo = pipeline.create(dai.node.StereoDepth)
-                mono_left.requestOutput((640, 400), fps=fps).link(stereo.left)
-                mono_right.requestOutput((640, 400), fps=fps).link(stereo.right)
-                stereo.setDepthAlign(dai.CameraBoardSocket.CAM_A)
-                try:
-                    stereo.setOutputSize(w, h)
-                except AttributeError:
-                    pass
-                log.info("Stereo depth enabled, aligned to CAM_A, %dx%d", w, h)
-            except Exception as exc:
-                log.warning("Stereo depth unavailable (%s) — RGB-only mode", exc)
-                stereo = None
+                stereo.setOutputSize(w, h)
+            except AttributeError:
+                pass
+            log.info("Stereo depth enabled, aligned to CAM_A, %dx%d", w, h)
+        except Exception as exc:
+            log.warning("Stereo depth unavailable (%s) — RGB-only mode", exc)
+            stereo = None
 
         # On-device sync: RGB + depth share the same capture timestamp.
         # 16 ms = half a frame at 30 fps — tight enough for aligned RGBD,
@@ -271,20 +262,19 @@ class OakCameraNode:
         log.info("On-device Sync enabled (threshold=16ms)")
 
         q_imu = None
-        if self._cfg["enable_imu"]:
-            try:
-                imu = pipeline.create(dai.node.IMU)
-                imu.enableIMUSensor(dai.IMUSensor.ACCELEROMETER_RAW, self._cfg["imu_hz"])
-                imu.enableIMUSensor(dai.IMUSensor.GYROSCOPE_RAW, self._cfg["imu_hz"])
-                # Batch 5 reports before sending — reduces USB overhead when running
-                # RGB + depth + IMU simultaneously (community-validated threshold).
-                imu.setBatchReportThreshold(5)
-                imu.setMaxBatchReports(20)
-                q_imu = imu.out.createOutputQueue(maxSize=50, blocking=False)
-                log.info("IMU enabled: ACCEL + GYRO at %d Hz", self._cfg["imu_hz"])
-            except Exception as exc:
-                log.warning("IMU unavailable (%s) — IMU disabled", exc)
-                q_imu = None
+        try:
+            imu = pipeline.create(dai.node.IMU)
+            imu.enableIMUSensor(dai.IMUSensor.ACCELEROMETER_RAW, self._cfg["imu_hz"])
+            imu.enableIMUSensor(dai.IMUSensor.GYROSCOPE_RAW, self._cfg["imu_hz"])
+            # Batch 5 reports before sending — reduces USB overhead when running
+            # RGB + depth + IMU simultaneously (community-validated threshold).
+            imu.setBatchReportThreshold(5)
+            imu.setMaxBatchReports(20)
+            q_imu = imu.out.createOutputQueue(maxSize=50, blocking=False)
+            log.info("IMU enabled: ACCEL + GYRO at %d Hz", self._cfg["imu_hz"])
+        except Exception as exc:
+            log.warning("IMU unavailable (%s) — IMU disabled", exc)
+            q_imu = None
 
         return q_sync, stereo is not None, q_imu
 
@@ -348,7 +338,7 @@ class OakCameraNode:
                 np.copyto(self._rgba_buf[:, :, :3], bgr[:, :, ::-1])
 
                 # Update grab_frame cache (non-blocking — liveness > consistency).
-                if cfg["enable_grab_frame"] and self._frame_lock.acquire(blocking=False):
+                if self._frame_lock.acquire(blocking=False):
                     try:
                         self._frame_cache["frame"] = {
                             "rgba": self._rgba_buf.copy(),
@@ -393,7 +383,7 @@ class OakCameraNode:
                 # IMU: drain all packets accumulated since the last RGB frame.
                 # Kept on a separate queue (not in the sync group) so every reading
                 # between frames is delivered — not just the one nearest the frame.
-                if q_imu is not None and self._imu_pub is not None:
+                if q_imu is not None:
                     for pkt in q_imu.tryGetAll():
                         for report in pkt.packets:
                             acc = report.acceleroMeter
@@ -410,8 +400,7 @@ class OakCameraNode:
         self._shutdown_evt.set()
         self._rgbd_pub.undeclare()
         self._compressed_pub.undeclare()
-        if self._imu_pub:
-            self._imu_pub.undeclare()
+        self._imu_pub.undeclare()
 
 
 if __name__ == "__main__":
