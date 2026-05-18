@@ -23,7 +23,7 @@ from datetime import datetime, timedelta, timezone
 
 import cv2
 import depthai as dai
-import kornia_rs.kornia_rs as kr
+import kornia_rs as kr
 import numpy as np
 
 log = logging.getLogger("oak-camera")
