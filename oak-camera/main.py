@@ -3,12 +3,12 @@
 
 Topics (auto-scoped under ``config.name``):
 
-- ``{name}/compressed``      — global CBOR, body = {width, height, encoding:"jpeg", data}.
-- ``{name}/rgbd``            — local SHM CBOR, body = {header, rgb, depth?}.
-- ``{name}/rgbd_compressed`` — global CBOR (opt-in), body = {width, height, rgb, depth}
-  where rgb.encoding="jpeg" and depth.encoding="rvl" (lossless RVL-compressed 16-bit).
-- ``{name}/imu``             — global CBOR (opt-in), body = {accel, gyro, timestamp_us}.
-- ``{name}/grab_frame``      — local queryable, returns JPEG receipt JSON on demand.
+- ``{name}/compressed``  — global CBOR, body = {width, height, rgb:{encoding:"jpeg", data},
+  depth?:{encoding:"rvl", data}}. depth is present only when enable_depth=true and a
+  depth camera is attached.
+- ``{name}/rgbd``        — local SHM CBOR, body = {header, rgb, depth?}.
+- ``{name}/imu``         — global CBOR (opt-in), body = {accel, gyro, timestamp_us}.
+- ``{name}/grab_frame``  — local queryable, returns JPEG receipt JSON on demand.
 """
 
 from __future__ import annotations
@@ -73,7 +73,6 @@ def _validate(cfg: dict) -> dict:
         "enable_depth": bool(cfg.get("enable_depth", True)),
         "enable_imu": bool(cfg.get("enable_imu", True)),
         "imu_hz": imu_hz,
-        "enable_rgbd_compressed": bool(cfg.get("enable_rgbd_compressed", False)),
         "enable_grab_frame": bool(cfg.get("enable_grab_frame", True)),
     }
 
@@ -193,9 +192,6 @@ class OakCameraNode:
 
         self._compressed_pub = ctx.publisher_cbor("compressed", schema_uri="bubbaloop://compressed/v1")
         self._rgbd_pub = ctx.publisher_cbor("rgbd", local=True, schema_uri="bubbaloop://rgbd/v1")
-        self._rgbd_compressed_pub = (
-            ctx.publisher_cbor("rgbd_compressed") if self._cfg["enable_rgbd_compressed"] else None
-        )
         self._imu_pub = (
             ctx.publisher_cbor("imu") if self._cfg["enable_imu"] else None
         )
@@ -224,8 +220,6 @@ class OakCameraNode:
         log.info("Configured: %s", self._cfg)
         log.info("compressed → %s", ctx.topic("compressed"))
         log.info("rgbd (SHM) → %s", ctx.local_topic("rgbd"))
-        if self._rgbd_compressed_pub:
-            log.info("rgbd_compressed → %s", ctx.topic("rgbd_compressed"))
         if self._imu_pub:
             log.info("imu → %s", ctx.topic("imu"))
 
@@ -380,28 +374,21 @@ class OakCameraNode:
                 self._seq += 1
 
                 if self._seq % cfg["jpeg_every_n"] == 0:
-                    ok, jpeg = cv2.imencode(
-                        ".jpg", bgr, [cv2.IMWRITE_JPEG_QUALITY, cfg["jpeg_quality"]]
-                    )
-                    if ok:
-                        self._compressed_pub.put({
-                            "width": w, "height": h, "encoding": "jpeg", "data": jpeg.tobytes(),
-                        })
-
-                    # rgbd_compressed: JPEG rgb + RVL depth (lossless).
+                    # compressed: JPEG rgb + optional RVL depth on a single topic.
                     # RVL delta+zigzag+VLE: ~11ms on NEON, 13% smaller than PNG lvl1.
-                    if self._rgbd_compressed_pub is not None and depth_frame is not None:
-                        rgb = self._rgba_buf[:, :, :3]  # RGBA → RGB (already in R,G,B order)
-                        rgb_jpeg = kr.image.Image.frombuffer(
-                            np.ascontiguousarray(rgb)
-                        ).encode("jpeg", quality=cfg["jpeg_quality"])
+                    rgb = self._rgba_buf[:, :, :3]
+                    rgb_jpeg = kr.image.Image.frombuffer(
+                        np.ascontiguousarray(rgb)
+                    ).encode("jpeg", quality=cfg["jpeg_quality"])
+                    msg: dict = {
+                        "width": w,
+                        "height": h,
+                        "rgb": {"encoding": "jpeg", "data": rgb_jpeg},
+                    }
+                    if depth_frame is not None:
                         depth_rvl = kr.io.encode_image_rvl(depth_frame[:, :, np.newaxis])
-                        self._rgbd_compressed_pub.put({
-                            "width": w,
-                            "height": h,
-                            "rgb":   {"encoding": "jpeg", "data": rgb_jpeg},
-                            "depth": {"encoding": "rvl",  "data": depth_rvl},
-                        })
+                        msg["depth"] = {"encoding": "rvl", "data": depth_rvl}
+                    self._compressed_pub.put(msg)
 
                 # IMU: drain all packets accumulated since the last RGB frame.
                 # Kept on a separate queue (not in the sync group) so every reading
@@ -423,8 +410,6 @@ class OakCameraNode:
         self._shutdown_evt.set()
         self._rgbd_pub.undeclare()
         self._compressed_pub.undeclare()
-        if self._rgbd_compressed_pub:
-            self._rgbd_compressed_pub.undeclare()
         if self._imu_pub:
             self._imu_pub.undeclare()
 
