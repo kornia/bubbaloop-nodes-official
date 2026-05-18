@@ -1,7 +1,7 @@
 name: oak-camera
-version: "0.1.0"
+version: "0.2.0"
 type: python
-description: OAK camera publisher — RGBD (RGBA + aligned depth16) over SHM, compressed JPEG over the network
+description: OAK camera publisher — RGBD over SHM + network (JPEG rgb + lossless RVL depth), optional IMU, grab_frame queryable
 author: Bubbaloop Team
 
 command: pixi run main
@@ -11,8 +11,9 @@ capabilities:
 
 requires:
   hardware:
-    - OAK camera (USB, Movidius MyriadX, vendor 03e7)
+    - "OAK camera (USB, Movidius MyriadX, vendor 03e7)"
   software:
-    - Python 3.10+
-    - depthai 3.x
-    - Linux udev rule granting 0666 on vendor 03e7
+    - "Python 3.10+"
+    - "depthai 3.x"
+    - "kornia-rs 0.1.12+"
+    - "Linux udev rule 0666 on vendor 03e7"

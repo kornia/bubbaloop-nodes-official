@@ -151,14 +151,9 @@ def _grab_frame_worker(
             query.reply_err(query.key_expr, b"no frame available yet")
             return
         orig_w, orig_h = frame["width"], frame["height"]
-        # Resize to max 1024 long edge before encoding — same budget as rtsp-camera
-        max_edge = 1024
-        if orig_w >= orig_h and orig_w > max_edge:
-            new_w, new_h = max_edge, max(1, orig_h * max_edge // orig_w)
-        elif orig_h > orig_w and orig_h > max_edge:
-            new_w, new_h = max(1, orig_w * max_edge // orig_h), max_edge
-        else:
-            new_w, new_h = orig_w, orig_h
+        scale = min(1.0, 1024 / max(orig_w, orig_h))
+        new_w = max(1, int(orig_w * scale))
+        new_h = max(1, int(orig_h * scale))
         rgb = np.ascontiguousarray(frame["rgba"][:, :, :3])
         if (new_w, new_h) != (orig_w, orig_h):
             rgb = kr.resize(rgb, (new_h, new_w), "bilinear")

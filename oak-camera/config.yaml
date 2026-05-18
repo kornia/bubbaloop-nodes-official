@@ -8,3 +8,14 @@ jpeg_every_n: 3
 jpeg_quality: 80
 
 enable_depth: true
+
+# IMU — raw accelerometer + gyroscope (OAK-D/Pro only; OAK-1 has no IMU; set false to disable)
+enable_imu: true
+imu_hz: 50
+
+# Global compressed RGBD: JPEG rgb + lossless PNG16 depth (~1.3 MB/frame at jpeg_every_n cadence)
+# For WiFi set jpeg_every_n >= 10 to stay under ~4 MB/s
+enable_rgbd_compressed: false
+
+# grab_frame queryable: lets the agent call grab_frame(node_name=...) for a JPEG snapshot
+enable_grab_frame: true
