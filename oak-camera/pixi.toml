@@ -17,4 +17,4 @@ depthai = ">=3.0"
 numpy = ">=1.24"
 cbor2 = ">=5.5"
 bubbaloop-sdk = { path = "/home/nvidia/bubbaloop/python-sdk", editable = true }
-kornia-rs = { path = "/home/nvidia/kornia-rs/kornia-py", editable = true }
+kornia-rs = ">=0.1.11"
