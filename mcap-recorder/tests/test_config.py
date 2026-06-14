@@ -140,3 +140,38 @@ def test_ring_buffer_rejects_nonpositive_window():
 def test_rejects_unknown_mode():
     with pytest.raises(ValueError, match="mode must be"):
         resolve_start_params(_ok_request(mode="bogus"))
+
+
+# ── key-pattern validation (security) ──────────────────────────────
+
+
+@pytest.mark.parametrize("pat", ["bubbaloop/global/**", "a/*/b", "x_y-z.w", "cam_*/compressed"])
+def test_accepts_wildcard_key_patterns(pat):
+    assert resolve_start_params({"topic_patterns": [pat]}).topic_patterns == (pat,)
+
+
+@pytest.mark.parametrize("pat", ["a b", "x;rm", "a$b", "re(.*)", "bad\x00here", "a@b", "key|expr"])
+def test_rejects_malformed_topic_patterns(pat):
+    with pytest.raises(ValueError, match="invalid topic pattern"):
+        resolve_start_params({"topic_patterns": [pat]})
+
+
+def test_rejects_malformed_exclude_patterns():
+    with pytest.raises(ValueError, match="invalid exclude pattern"):
+        resolve_start_params(_ok_request(exclude=["(.*"]))
+
+
+# ── generated recording names ──────────────────────────────────────
+
+
+def test_generated_name_is_microsecond_precise_and_valid():
+    from recorder.config import generate_recording_name
+    from recorder.storage_layout import validate_recording_name
+
+    name = generate_recording_name()
+    validate_recording_name(name)  # must be a storage-valid name
+    # rec_<8 date>_<6 time>_<6 micros>
+    parts = name.split("_")
+    assert parts[0] == "rec"
+    assert len(parts) == 4
+    assert len(parts[1]) == 8 and len(parts[2]) == 6 and len(parts[3]) == 6

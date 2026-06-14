@@ -36,9 +36,16 @@ _CHUNK_NAME_SHA_PREFIX = 8
 
 
 def bubbaloop_dir() -> Path:
-    """`~/.bubbaloop` (honoring $HOME), matching `storage::bubbaloop_dir`."""
-    home = os.environ.get("HOME") or str(Path.home())
-    return Path(home) / ".bubbaloop"
+    """`~/.bubbaloop` (honoring $HOME), matching `storage::bubbaloop_dir`.
+
+    Falls back to the password-db home if $HOME is unset or not absolute, so the
+    recordings root can never be a relative/traversal path (the old config used
+    to guard `output_dir` for this; the location is now fixed)."""
+    home = os.environ.get("HOME") or ""
+    base = Path(home)
+    if not home or not base.is_absolute():
+        base = Path.home()
+    return base / ".bubbaloop"
 
 
 def recordings_dir() -> Path:

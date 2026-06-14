@@ -21,9 +21,14 @@ from datetime import datetime
 from pathlib import Path
 from typing import Mapping, Optional, Sequence, Tuple
 
+from .ring_buffer import DEFAULT_RING_MAX_BYTES
 from .storage_layout import validate_recording_name
 
 _INSTANCE_NAME_RE = re.compile(r"^[a-zA-Z0-9/_\-\.]+$")
+# Zenoh subscription patterns: topic-name chars plus the `*`/`**` wildcards.
+# Rejects selector syntax, regex metachars, whitespace, control chars (CLAUDE.md
+# topic-name rule, widened for wildcards).
+_KEY_PATTERN_RE = re.compile(r"^[a-zA-Z0-9/_\-\.*]+$")
 
 DEFAULT_CHUNK_DURATION_SECS = 300
 DEFAULT_CHUNK_MAX_BYTES = 1_073_741_824  # 1 GiB
@@ -35,9 +40,6 @@ class NodeConfig:
     """Boot-time install config from `config.yaml`."""
 
     name: str
-
-
-DEFAULT_RING_MAX_BYTES = 256 * 1024 * 1024  # 256 MiB in-memory window cap
 
 
 @dataclass(frozen=True)
@@ -64,8 +66,10 @@ def load_config(cfg: Mapping[str, object]) -> NodeConfig:
 
 
 def generate_recording_name() -> str:
-    """A default recording name like `rec_20260615_031400` (valid + sortable)."""
-    return "rec_" + datetime.now().strftime("%Y%m%d_%H%M%S")
+    """A default recording name like `rec_20260615_031400_481923` (valid +
+    sortable). Microsecond precision so two flushes in the same second don't
+    collide on the same directory."""
+    return "rec_" + datetime.now().strftime("%Y%m%d_%H%M%S_%f")
 
 
 def resolve_start_params(params: Mapping[str, object]) -> StartParams:
@@ -79,15 +83,19 @@ def resolve_start_params(params: Mapping[str, object]) -> StartParams:
     ):
         raise ValueError("topic_patterns must be a non-empty list of strings")
     for p in raw_patterns:
-        if not isinstance(p, str) or "\x00" in p:
-            raise ValueError(f"invalid topic pattern: {p!r}")
+        if not isinstance(p, str) or not _KEY_PATTERN_RE.match(p):
+            raise ValueError(
+                f"invalid topic pattern {p!r} — must match {_KEY_PATTERN_RE.pattern}"
+            )
 
     raw_exclude = params.get("exclude", [])
     if isinstance(raw_exclude, str) or not isinstance(raw_exclude, Sequence):
         raise ValueError("exclude must be a list of strings")
     for p in raw_exclude:
-        if not isinstance(p, str) or "\x00" in p:
-            raise ValueError(f"invalid exclude pattern: {p!r}")
+        if not isinstance(p, str) or not _KEY_PATTERN_RE.match(p):
+            raise ValueError(
+                f"invalid exclude pattern {p!r} — must match {_KEY_PATTERN_RE.pattern}"
+            )
 
     name = params.get("name")
     if name is None:

@@ -16,7 +16,7 @@ import logging
 import queue
 import threading
 import time
-from typing import Any, List, Optional, Sequence
+from typing import Any, List, Optional, Sequence, Tuple
 
 import cbor2
 import zenoh
@@ -32,6 +32,9 @@ log = logging.getLogger(__name__)
 # Bounded queue caps memory if writes fall behind. On overflow, callbacks drop
 # samples and log periodically (avoids log floods at sustained drop rate).
 _QUEUE_MAX = 4096
+
+# A decoded sample: (topic, encoding, payload, publish_time_ns, log_time_ns).
+DecodedSample = Tuple[str, SampleEncoding, bytes, int, int]
 
 
 def extract_publish_time(
@@ -58,6 +61,34 @@ def extract_publish_time(
     except Exception:
         pass
     return log_time_ns
+
+
+def decode_sample(sample: zenoh.Sample, decode_timestamps: bool) -> DecodedSample:
+    """Decode a Zenoh sample into the recorder's internal tuple. Shared by the
+    streaming and ring-buffer hot paths so they can never drift."""
+    topic = str(sample.key_expr)
+    encoding = SampleEncoding.from_zenoh(str(sample.encoding))
+    payload = bytes(sample.payload)
+    log_time_ns = time.time_ns()  # recorder receipt clock
+    publish_time_ns = extract_publish_time(payload, encoding, log_time_ns, decode_timestamps)
+    return topic, encoding, payload, publish_time_ns, log_time_ns
+
+
+class _DropCounter:
+    """Thread-safe drop counter shared by the multiple Zenoh callback threads."""
+
+    def __init__(self) -> None:
+        self._n = 0
+        self._lock = threading.Lock()
+
+    def record(self) -> int:
+        with self._lock:
+            self._n += 1
+            return self._n
+
+    @property
+    def count(self) -> int:
+        return self._n
 
 
 class RecordingSession:
@@ -89,9 +120,11 @@ class RecordingSession:
         self._dir = recording_dir(name)
         self._chunks_dir = chunks_dir(name)
         self._started_mono = time.monotonic()
-        # Best-effort protobuf descriptor cache (topic → bytes|None), fetched once
-        # per topic so a missing schema isn't re-queried on every message.
+        # Best-effort protobuf descriptor cache (topic → bytes|None). Fetched
+        # asynchronously so the writer thread never blocks on a Zenoh round-trip;
+        # a fetched schema attaches from the next chunk-file rotation onward.
         self._schema_cache: dict = {}
+        self._schema_lock = threading.Lock()
 
         self._recording = manifest.Recording(
             name=name,
@@ -125,7 +158,7 @@ class RecordingSession:
         # Guards `self._writer` so status() can read counters concurrently.
         self._writer_lock = threading.Lock()
 
-        self._dropped = 0
+        self._drops = _DropCounter()
         self._subscribers: List[Any] = []
 
     # ------------------------------------------------------------------
@@ -154,16 +187,21 @@ class RecordingSession:
             except Exception as exc:
                 log.warning("Failed to undeclare subscriber: %s", exc)
         self._subscribers.clear()
+        # The writer thread is the SOLE owner of self._writer: it drains the
+        # queue and calls finish() itself on exit, so we never race it here.
         self._stop_event.set()
-        self._writer_thread.join(timeout=10.0)
-        with self._writer_lock:
-            self._writer.finish()  # emits the last chunk via _on_chunk_finalized
+        self._writer_thread.join(timeout=15.0)
+        alive = self._writer_thread.is_alive()
+        if alive:
+            log.error("writer thread did not stop within 15s for '%s'", self.name)
 
         ended = time.time_ns()
         with self._manifest_lock:
             self._recording.ended_at_ns = ended
             self._recording.duration_ns = max(0, ended - self._recording.started_at_ns)
-            self._recording.channels = self._writer.channels()
+            # Only read writer state if the thread is truly done (else it's a race).
+            if not alive:
+                self._recording.channels = self._writer.channels()
             self._save_manifest_locked()
 
         summary = {
@@ -172,7 +210,7 @@ class RecordingSession:
             "chunk_count": len(self._recording.chunks),
             "total_messages": self._writer.total_messages,
             "size_bytes": self._recording.size_bytes,
-            "dropped": self._dropped,
+            "dropped": self._drops.count,
         }
         log.info(
             "Recording '%s' stopped: chunks=%d messages=%d bytes=%d dropped=%d",
@@ -180,7 +218,7 @@ class RecordingSession:
             summary["chunk_count"],
             summary["total_messages"],
             summary["size_bytes"],
-            self._dropped,
+            summary["dropped"],
         )
         return summary
 
@@ -197,12 +235,12 @@ class RecordingSession:
             "recording_dir": str(self._dir),
             "topic_patterns": list(self._topic_patterns),
             "active_topics": topics,
-            "current_chunk": current_chunk,
+            "current_chunk_index": current_chunk,
             "finalized_chunks": finalized,
             "messages_recorded": messages,
             "bytes_finalized": size,
             "elapsed_secs": int(time.monotonic() - self._started_mono),
-            "dropped": self._dropped,
+            "dropped": self._drops.count,
         }
 
     # ------------------------------------------------------------------
@@ -210,9 +248,9 @@ class RecordingSession:
     # ------------------------------------------------------------------
 
     def _on_chunk_finalized(self, chunk: manifest.Chunk) -> None:
-        # Called from the writer thread (rotate) or the control thread (stop's
-        # finish()). Append the chunk + refresh channels, then persist so the
-        # sync driver sees a new un-uploaded chunk.
+        # Called from the writer thread (rotate + final finish). Append the chunk
+        # + refresh channels, then persist so the sync driver sees a new
+        # un-uploaded chunk.
         with self._manifest_lock:
             self._recording.chunks.append(chunk)
             self._recording.size_bytes += chunk.size_bytes
@@ -235,18 +273,12 @@ class RecordingSession:
 
     def _on_sample(self, sample: zenoh.Sample) -> None:
         try:
-            topic = str(sample.key_expr)
-            encoding = SampleEncoding.from_zenoh(str(sample.encoding))
-            payload = bytes(sample.payload)
-            log_time_ns = time.time_ns()  # recorder receipt clock
-            publish_time_ns = extract_publish_time(
-                payload, encoding, log_time_ns, self._decode_timestamps
-            )
-            self._queue.put_nowait((topic, encoding, payload, publish_time_ns, log_time_ns))
+            item = decode_sample(sample, self._decode_timestamps)
+            self._queue.put_nowait(item)
         except queue.Full:
-            self._dropped += 1
-            if self._dropped == 1 or self._dropped % 100 == 0:
-                log.warning("Writer queue full — dropped %d samples total", self._dropped)
+            n = self._drops.record()
+            if n == 1 or n % 100 == 0:
+                log.warning("Writer queue full — dropped %d samples total", n)
         except Exception as exc:
             log.warning("Sample handler error: %s", exc)
 
@@ -270,10 +302,17 @@ class RecordingSession:
                 break
             self._write_one(item)
 
-    def _write_one(self, item) -> None:
+        # Finalize the last chunk here (sole owner of self._writer) so stop()
+        # never races a still-running writer thread.
+        try:
+            with self._writer_lock:
+                self._writer.finish()
+        except Exception as exc:
+            log.error("Final chunk finalize failed for '%s': %s", self.name, exc)
+
+    def _write_one(self, item: DecodedSample) -> None:
         topic, encoding, payload, publish_time_ns, log_time_ns = item
         try:
-            # Resolve a protobuf schema once per topic (best-effort, off-lock).
             schema_bytes = self._schema_for(topic, encoding)
             with self._writer_lock:
                 self._writer.register_channel(topic, encoding, schema_bytes=schema_bytes)
@@ -282,20 +321,37 @@ class RecordingSession:
             log.warning("Failed to write sample (%s): %s", topic, exc)
 
     def _schema_for(self, topic: str, encoding: SampleEncoding):
-        """Best-effort protobuf FileDescriptorSet for `topic` (cached per topic).
-        Non-protobuf topics and fetch failures return ``None`` — never fatal."""
+        """Best-effort protobuf FileDescriptorSet for `topic`. Non-blocking: the
+        first sighting kicks off a background fetch and returns ``None`` now; a
+        fetched schema is applied from the next chunk-file rotation. Never stalls
+        the writer thread on the Zenoh round-trip."""
         if encoding.kind != "protobuf":
             return None
-        if topic in self._schema_cache:
-            return self._schema_cache[topic]
-        data = None
+        with self._schema_lock:
+            if topic in self._schema_cache:
+                return self._schema_cache[topic]
+            self._schema_cache[topic] = None  # pending → only one fetch per topic
         instance = source_instance_from_topic(topic)
         if instance is not None and self._session is not None:
-            data = fetch_descriptor(self._session, self._machine_id, instance)
-            if data is None:
-                log.debug("no protobuf schema for %s (instance %s)", topic, instance)
-        self._schema_cache[topic] = data
-        return data
+            threading.Thread(
+                target=self._fetch_schema_async,
+                args=(topic, instance),
+                name="schema-fetch",
+                daemon=True,
+            ).start()
+        return None
+
+    def _fetch_schema_async(self, topic: str, instance: str) -> None:
+        data = fetch_descriptor(self._session, self._machine_id, instance)
+        if data is None:
+            log.debug("no protobuf schema for %s (instance %s)", topic, instance)
+            return
+        with self._schema_lock:
+            self._schema_cache[topic] = data
+        # Apply to future chunk files (MCAP can't add a schema to an open channel).
+        with self._writer_lock:
+            self._writer.set_topic_schema(topic, data)
+        log.debug("fetched protobuf schema for %s (%d bytes)", topic, len(data))
 
 
 class RingBufferSession:
@@ -330,9 +386,11 @@ class RingBufferSession:
 
         self._ring = RingBuffer(window_ns=window_secs * 1_000_000_000, max_bytes=ring_max_bytes)
         self._lock = threading.Lock()
+        # Serializes seals so two concurrent flushes can't interleave disk writes.
+        self._flush_lock = threading.Lock()
         self._subscribers: List[Any] = []
         self._flush_count = 0
-        self._dropped = 0
+        self._drops = _DropCounter()
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -342,7 +400,7 @@ class RingBufferSession:
         log.info(
             "Starting ring-buffer capture (window=%ds, cap=%d bytes)",
             self._window_secs,
-            self._ring._max_bytes,
+            self._ring.max_bytes,
         )
         for pattern in self._topic_patterns:
             sub = self._session.declare_subscriber(pattern, self._on_sample)
@@ -359,14 +417,15 @@ class RingBufferSession:
         with self._lock:
             buffered = len(self._ring)
             self._ring.clear()
+            flushes = self._flush_count
         log.info(
             "Ring-buffer capture stopped: flushes=%d, discarded %d buffered sample(s)",
-            self._flush_count,
+            flushes,
             buffered,
         )
         return {
             "mode": "ring_buffer",
-            "flushes": self._flush_count,
+            "flushes": flushes,
             "discarded_buffered": buffered,
         }
 
@@ -374,34 +433,38 @@ class RingBufferSession:
         with self._lock:
             buffered = len(self._ring)
             buffered_bytes = self._ring.byte_len
+            flushes = self._flush_count
         return {
             "mode": "ring_buffer",
             "window_secs": self._window_secs,
             "buffered_samples": buffered,
             "buffered_bytes": buffered_bytes,
-            "flushes": self._flush_count,
+            "flushes": flushes,
             "elapsed_secs": int(time.monotonic() - self._started_mono),
-            "dropped": self._dropped,
+            "dropped": self._drops.count,
         }
 
     def flush(self, name: str) -> dict:
         """Seal the current window into a new recording `name`. Raises
-        ``ValueError`` if the buffer is empty."""
-        with self._lock:
-            snapshot = self._ring.snapshot()
-        if not snapshot:
-            raise ValueError("ring buffer is empty — nothing to flush")
-        rec = seal(
-            name=name,
-            machine_id=self._machine_id,
-            samples=snapshot,
-            window_secs=self._window_secs,
-            selection=manifest.Selection(
-                topics=list(self._topic_patterns), exclude=list(self._exclude)
-            ),
-            recorder_version=self._recorder_version,
-        )
-        self._flush_count += 1
+        ``ValueError`` if the buffer is empty. Seals are serialized so two
+        flushes can't interleave disk writes."""
+        with self._flush_lock:
+            with self._lock:
+                snapshot = self._ring.snapshot()
+            if not snapshot:
+                raise ValueError("ring buffer is empty — nothing to flush")
+            rec = seal(
+                name=name,
+                machine_id=self._machine_id,
+                samples=snapshot,
+                window_secs=self._window_secs,
+                selection=manifest.Selection(
+                    topics=list(self._topic_patterns), exclude=list(self._exclude)
+                ),
+                recorder_version=self._recorder_version,
+            )
+            with self._lock:
+                self._flush_count += 1
         log.info(
             "Flushed ring buffer → '%s' (%d sample(s), %d chunk(s), %d bytes)",
             name,
@@ -422,12 +485,8 @@ class RingBufferSession:
 
     def _on_sample(self, sample: zenoh.Sample) -> None:
         try:
-            topic = str(sample.key_expr)
-            encoding = SampleEncoding.from_zenoh(str(sample.encoding))
-            payload = bytes(sample.payload)
-            log_time_ns = time.time_ns()
-            publish_time_ns = extract_publish_time(
-                payload, encoding, log_time_ns, self._decode_timestamps
+            topic, encoding, payload, publish_time_ns, log_time_ns = decode_sample(
+                sample, self._decode_timestamps
             )
             with self._lock:
                 self._ring.push(

@@ -67,6 +67,10 @@ class RingBuffer:
         while len(self._samples) > 1 and self._bytes > self._max_bytes:
             self._bytes -= len(self._samples.popleft().data)
 
+    @property
+    def max_bytes(self) -> int:
+        return self._max_bytes
+
     def snapshot(self) -> List[BufferedSample]:
         return list(self._samples)
 

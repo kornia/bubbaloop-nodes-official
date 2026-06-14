@@ -16,6 +16,7 @@ the sample's source time), matching `ring_buffer.rs`.
 from __future__ import annotations
 
 import logging
+import os
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -141,7 +142,6 @@ class ChunkedMcapWriter:
 
         self._total_messages = 0
         self._total_bytes = 0
-        self._chunks_finalized = 0
 
     def open_chunk(self) -> None:
         self._chunks_dir.mkdir(parents=True, exist_ok=True)
@@ -309,6 +309,14 @@ class ChunkedMcapWriter:
         self._writer.finish()
         self._writer = None
         if self._stream is not None:
+            # fsync the chunk bytes to disk BEFORE the rename, so the manifest we
+            # save next can never reference a canonical chunk whose data didn't
+            # survive a crash (§3.3.9 / §8 durability).
+            try:
+                self._stream.flush()
+                os.fsync(self._stream.fileno())
+            except OSError as exc:
+                log.warning("fsync of chunk %d failed: %s", self._index, exc)
             self._stream.close()
             self._stream = None
 
@@ -324,7 +332,6 @@ class ChunkedMcapWriter:
         active.rename(final)
         self._active_path = None
         self._total_bytes += size
-        self._chunks_finalized += 1
         log.info("Finalized %s (%d bytes)", final.name, size)
 
         chunk = manifest.Chunk.finalized(
@@ -356,9 +363,14 @@ class ChunkedMcapWriter:
         return self._total_bytes
 
     @property
-    def chunks_finalized(self) -> int:
-        return self._chunks_finalized
-
-    @property
     def active_topics(self) -> int:
         return len(self._channel_specs)
+
+    def set_topic_schema(self, topic: str, schema_bytes: bytes) -> None:
+        """Attach a protobuf descriptor to `topic` for FUTURE chunk files (MCAP
+        can't add a schema to an already-open channel). The session calls this
+        when an async schema fetch completes; the next rotation re-registers the
+        channel with the schema. No-op if the topic isn't known yet."""
+        spec = self._channel_specs.get(topic)
+        if spec is not None:
+            self._channel_specs[topic] = (spec[0], schema_bytes)

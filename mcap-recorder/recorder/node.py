@@ -256,18 +256,23 @@ class RecorderNode:
             return
 
         with self._lock:
-            if self._active is None or getattr(self._active, "mode", "streaming") != "ring_buffer":
+            active = self._active
+            if active is None or getattr(active, "mode", "streaming") != "ring_buffer":
                 self._reply_error(
                     query,
                     "E_NOT_RING_BUFFER",
                     "flush_recording requires an active ring_buffer session",
                 )
                 return
-            try:
-                summary = self._active.flush(name)
-            except ValueError as exc:
-                self._reply_error(query, "E_EMPTY_BUFFER", str(exc))
-                return
+        # seal() does disk I/O (sha256 + fsync) — run it WITHOUT holding the node
+        # lock so a concurrent get_status / status-queryable / stop isn't blocked
+        # for the seal duration. flush() is internally serialized + snapshots the
+        # ring under its own lock.
+        try:
+            summary = active.flush(name)
+        except ValueError as exc:
+            self._reply_error(query, "E_EMPTY_BUFFER", str(exc))
+            return
         self._reply_ok(query, {"status": "flushed", **summary})
 
     def _on_status_query(self, query: zenoh.Query) -> None:

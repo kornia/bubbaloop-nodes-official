@@ -136,6 +136,21 @@ def test_write_to_unregistered_channel_fails():
             w.write_message("nope/topic", publish_time_ns=1, log_time_ns=1, data=b"hi")
 
 
+def test_set_topic_schema_updates_future_registration():
+    with tempfile.TemporaryDirectory() as tmp:
+        d = Path(tmp)
+        w = _writer(d, 1 << 30, [])
+        w.open_chunk()
+        enc = SampleEncoding.from_zenoh("application/protobuf;p.v1.M")
+        w.register_channel("t/p", enc)  # registered before the schema arrives
+        assert w._channel_specs["t/p"][1] is None
+        # an async fetch completes → schema attached for the NEXT chunk file
+        w.set_topic_schema("t/p", b"\x0a\x02fd")
+        assert w._channel_specs["t/p"][1] == b"\x0a\x02fd"
+        # unknown topic is a safe no-op (fetch raced ahead of first sample)
+        w.set_topic_schema("never/seen", b"x")  # must not raise
+
+
 def test_channels_metadata_and_readback():
     """The finalized MCAP carries §4.5 channel metadata and dual timestamps that
     storage::replay::read_recording_messages reads back."""
