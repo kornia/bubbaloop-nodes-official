@@ -23,6 +23,8 @@ import zenoh
 
 from . import manifest
 from .mcap_writer import ChunkedMcapWriter, SampleEncoding
+from .ring_buffer import BufferedSample, RingBuffer, seal
+from .schema_fetch import fetch_descriptor, source_instance_from_topic
 from .storage_layout import chunks_dir, recording_dir
 
 log = logging.getLogger(__name__)
@@ -30,6 +32,32 @@ log = logging.getLogger(__name__)
 # Bounded queue caps memory if writes fall behind. On overflow, callbacks drop
 # samples and log periodically (avoids log floods at sustained drop rate).
 _QUEUE_MAX = 4096
+
+
+def extract_publish_time(
+    payload: bytes, encoding: SampleEncoding, log_time_ns: int, decode_timestamps: bool
+) -> int:
+    """Source publish-time (ns) from the message header when available and
+    decoding is enabled; otherwise fall back to the recorder receipt clock.
+    Shared by streaming and ring-buffer capture."""
+    if not decode_timestamps:
+        return log_time_ns
+    try:
+        if encoding.kind == "cbor":
+            obj = cbor2.loads(payload)
+        elif encoding.kind == "json":
+            obj = json.loads(payload)
+        else:
+            return log_time_ns
+        if isinstance(obj, dict):
+            header = obj.get("header")
+            if isinstance(header, dict):
+                ts = header.get("ts_ns")
+                if isinstance(ts, int):
+                    return ts
+    except Exception:
+        pass
+    return log_time_ns
 
 
 class RecordingSession:
@@ -57,9 +85,13 @@ class RecordingSession:
         # output under the recordings root the storage layer scans.
         self.name = name
         self.session_id = name  # kept for status compatibility
+        self._machine_id = machine_id
         self._dir = recording_dir(name)
         self._chunks_dir = chunks_dir(name)
         self._started_mono = time.monotonic()
+        # Best-effort protobuf descriptor cache (topic → bytes|None), fetched once
+        # per topic so a missing schema isn't re-queried on every message.
+        self._schema_cache: dict = {}
 
         self._recording = manifest.Recording(
             name=name,
@@ -207,7 +239,9 @@ class RecordingSession:
             encoding = SampleEncoding.from_zenoh(str(sample.encoding))
             payload = bytes(sample.payload)
             log_time_ns = time.time_ns()  # recorder receipt clock
-            publish_time_ns = self._publish_time(payload, encoding, log_time_ns)
+            publish_time_ns = extract_publish_time(
+                payload, encoding, log_time_ns, self._decode_timestamps
+            )
             self._queue.put_nowait((topic, encoding, payload, publish_time_ns, log_time_ns))
         except queue.Full:
             self._dropped += 1
@@ -215,28 +249,6 @@ class RecordingSession:
                 log.warning("Writer queue full — dropped %d samples total", self._dropped)
         except Exception as exc:
             log.warning("Sample handler error: %s", exc)
-
-    def _publish_time(self, payload: bytes, encoding: SampleEncoding, log_time_ns: int) -> int:
-        """Source publish-time (ns) from the message header when available and
-        decoding is enabled; otherwise fall back to the receipt clock."""
-        if not self._decode_timestamps:
-            return log_time_ns
-        try:
-            if encoding.kind == "cbor":
-                obj = cbor2.loads(payload)
-            elif encoding.kind == "json":
-                obj = json.loads(payload)
-            else:
-                return log_time_ns
-            if isinstance(obj, dict):
-                header = obj.get("header")
-                if isinstance(header, dict):
-                    ts = header.get("ts_ns")
-                    if isinstance(ts, int):
-                        return ts
-        except Exception:
-            pass
-        return log_time_ns
 
     # ------------------------------------------------------------------
     # Writer thread
@@ -261,8 +273,165 @@ class RecordingSession:
     def _write_one(self, item) -> None:
         topic, encoding, payload, publish_time_ns, log_time_ns = item
         try:
+            # Resolve a protobuf schema once per topic (best-effort, off-lock).
+            schema_bytes = self._schema_for(topic, encoding)
             with self._writer_lock:
-                self._writer.register_channel(topic, encoding, schema_bytes=None)
+                self._writer.register_channel(topic, encoding, schema_bytes=schema_bytes)
                 self._writer.write_message(topic, publish_time_ns, log_time_ns, payload)
         except Exception as exc:
             log.warning("Failed to write sample (%s): %s", topic, exc)
+
+    def _schema_for(self, topic: str, encoding: SampleEncoding):
+        """Best-effort protobuf FileDescriptorSet for `topic` (cached per topic).
+        Non-protobuf topics and fetch failures return ``None`` — never fatal."""
+        if encoding.kind != "protobuf":
+            return None
+        if topic in self._schema_cache:
+            return self._schema_cache[topic]
+        data = None
+        instance = source_instance_from_topic(topic)
+        if instance is not None and self._session is not None:
+            data = fetch_descriptor(self._session, self._machine_id, instance)
+            if data is None:
+                log.debug("no protobuf schema for %s (instance %s)", topic, instance)
+        self._schema_cache[topic] = data
+        return data
+
+
+class RingBufferSession:
+    """Ring-buffer capture (§3.3.5): keep a bounded in-memory window; a `flush`
+    command seals the current window into a new recording, then buffering
+    continues. Nothing touches disk until a flush."""
+
+    mode = "ring_buffer"
+
+    def __init__(
+        self,
+        zenoh_session: zenoh.Session,
+        machine_id: str,
+        topic_patterns: Sequence[str],
+        window_secs: int,
+        ring_max_bytes: int,
+        decode_timestamps: bool,
+        exclude: Optional[Sequence[str]] = None,
+        recorder_version: str = "",
+    ):
+        self._session = zenoh_session
+        self._machine_id = machine_id
+        self._topic_patterns = list(topic_patterns)
+        self._exclude = list(exclude or [])
+        self._decode_timestamps = decode_timestamps
+        self._recorder_version = recorder_version
+        self._window_secs = window_secs
+
+        self.name = "ring_buffer"  # not a recording name; for status display
+        self.session_id = "ring_buffer"
+        self._started_mono = time.monotonic()
+
+        self._ring = RingBuffer(window_ns=window_secs * 1_000_000_000, max_bytes=ring_max_bytes)
+        self._lock = threading.Lock()
+        self._subscribers: List[Any] = []
+        self._flush_count = 0
+        self._dropped = 0
+
+    # ------------------------------------------------------------------
+    # Lifecycle
+    # ------------------------------------------------------------------
+
+    def start(self) -> None:
+        log.info(
+            "Starting ring-buffer capture (window=%ds, cap=%d bytes)",
+            self._window_secs,
+            self._ring._max_bytes,
+        )
+        for pattern in self._topic_patterns:
+            sub = self._session.declare_subscriber(pattern, self._on_sample)
+            self._subscribers.append(sub)
+            log.info("Subscribed to '%s'", pattern)
+
+    def stop(self) -> dict:
+        for sub in self._subscribers:
+            try:
+                sub.undeclare()
+            except Exception as exc:
+                log.warning("Failed to undeclare subscriber: %s", exc)
+        self._subscribers.clear()
+        with self._lock:
+            buffered = len(self._ring)
+            self._ring.clear()
+        log.info(
+            "Ring-buffer capture stopped: flushes=%d, discarded %d buffered sample(s)",
+            self._flush_count,
+            buffered,
+        )
+        return {
+            "mode": "ring_buffer",
+            "flushes": self._flush_count,
+            "discarded_buffered": buffered,
+        }
+
+    def status(self) -> dict:
+        with self._lock:
+            buffered = len(self._ring)
+            buffered_bytes = self._ring.byte_len
+        return {
+            "mode": "ring_buffer",
+            "window_secs": self._window_secs,
+            "buffered_samples": buffered,
+            "buffered_bytes": buffered_bytes,
+            "flushes": self._flush_count,
+            "elapsed_secs": int(time.monotonic() - self._started_mono),
+            "dropped": self._dropped,
+        }
+
+    def flush(self, name: str) -> dict:
+        """Seal the current window into a new recording `name`. Raises
+        ``ValueError`` if the buffer is empty."""
+        with self._lock:
+            snapshot = self._ring.snapshot()
+        if not snapshot:
+            raise ValueError("ring buffer is empty — nothing to flush")
+        rec = seal(
+            name=name,
+            machine_id=self._machine_id,
+            samples=snapshot,
+            window_secs=self._window_secs,
+            selection=manifest.Selection(
+                topics=list(self._topic_patterns), exclude=list(self._exclude)
+            ),
+            recorder_version=self._recorder_version,
+        )
+        self._flush_count += 1
+        log.info(
+            "Flushed ring buffer → '%s' (%d sample(s), %d chunk(s), %d bytes)",
+            name,
+            len(snapshot),
+            len(rec.chunks),
+            rec.size_bytes,
+        )
+        return {
+            "name": name,
+            "sample_count": len(snapshot),
+            "chunk_count": len(rec.chunks),
+            "size_bytes": rec.size_bytes,
+        }
+
+    # ------------------------------------------------------------------
+    # Hot path — runs on Zenoh's threads
+    # ------------------------------------------------------------------
+
+    def _on_sample(self, sample: zenoh.Sample) -> None:
+        try:
+            topic = str(sample.key_expr)
+            encoding = SampleEncoding.from_zenoh(str(sample.encoding))
+            payload = bytes(sample.payload)
+            log_time_ns = time.time_ns()
+            publish_time_ns = extract_publish_time(
+                payload, encoding, log_time_ns, self._decode_timestamps
+            )
+            with self._lock:
+                self._ring.push(
+                    BufferedSample(topic, encoding, publish_time_ns, log_time_ns, payload)
+                )
+        except Exception as exc:
+            log.warning("Ring-buffer sample handler error: %s", exc)

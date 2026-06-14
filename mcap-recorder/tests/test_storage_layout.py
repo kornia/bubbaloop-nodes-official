@@ -131,3 +131,34 @@ def test_manifest_save_atomic_roundtrip(tmp_path):
     on_disk = json.loads((tmp_path / m.MANIFEST_FILE).read_bytes())
     assert on_disk["ended_at_ns"] == rec.started_at_ns + 100
     assert not (tmp_path / (m.MANIFEST_FILE + ".tmp")).exists()  # tmp cleaned up
+
+
+# ---------------------------------------------------------------------------
+# crash-resilience sweep (§3.3.9)
+# ---------------------------------------------------------------------------
+
+
+def test_sweep_removes_only_temps(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    rec_dir = sl.recordings_dir() / "rec_a"
+    chunks = rec_dir / "chunks"
+    chunks.mkdir(parents=True)
+    # leftovers from a crash
+    (rec_dir / "manifest.json.tmp").write_text("{}")
+    (chunks / ".chunk-000003.mcap.active").write_bytes(b"partial")
+    # legitimate finalized state that must survive
+    (rec_dir / "manifest.json").write_text("{}")
+    finalized = chunks / "chunk-000000-deadbeef.mcap"
+    finalized.write_bytes(b"ok")
+
+    removed = sl.sweep_incomplete_temps()
+    assert removed == 2
+    assert not (rec_dir / "manifest.json.tmp").exists()
+    assert not (chunks / ".chunk-000003.mcap.active").exists()
+    assert (rec_dir / "manifest.json").exists()
+    assert finalized.exists()
+
+
+def test_sweep_no_recordings_dir_is_zero(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))  # no recordings dir yet
+    assert sl.sweep_incomplete_temps() == 0

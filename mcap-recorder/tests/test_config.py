@@ -111,3 +111,32 @@ def test_rejects_zero_chunk_duration():
 def test_rejects_zero_chunk_max_bytes():
     with pytest.raises(ValueError, match="chunk_max_bytes"):
         resolve_start_params(_ok_request(chunk_max_bytes=0))
+
+
+# ── ring-buffer mode ───────────────────────────────────────────────
+
+
+def test_streaming_is_default_mode():
+    assert resolve_start_params(_ok_request()).mode == "streaming"
+
+
+def test_ring_buffer_requires_window_secs():
+    with pytest.raises(ValueError, match="window_secs is required"):
+        resolve_start_params(_ok_request(mode="ring_buffer"))
+
+
+def test_ring_buffer_resolves_window_and_cap():
+    p = resolve_start_params(_ok_request(mode="ring_buffer", window_secs=30, ring_max_bytes=4096))
+    assert p.mode == "ring_buffer"
+    assert p.window_secs == 30
+    assert p.ring_max_bytes == 4096
+
+
+def test_ring_buffer_rejects_nonpositive_window():
+    with pytest.raises(ValueError, match="window_secs must be > 0"):
+        resolve_start_params(_ok_request(mode="ring_buffer", window_secs=0))
+
+
+def test_rejects_unknown_mode():
+    with pytest.raises(ValueError, match="mode must be"):
+        resolve_start_params(_ok_request(mode="bogus"))

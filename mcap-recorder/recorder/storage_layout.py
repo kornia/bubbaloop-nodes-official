@@ -117,3 +117,29 @@ def object_key_chunk(machine_id: str, recording_name: str, index: int, sha256_he
 def object_key_manifest(machine_id: str, recording_name: str) -> str:
     """Deterministic remote object key for the manifest (`object_key_manifest`)."""
     return f"{machine_id}/{recording_name}/manifest.json"
+
+
+def sweep_incomplete_temps() -> int:
+    """Remove orphaned write-temp files left by a crash (§3.3.9 crash
+    resilience): half-written chunk temps (``chunks/.chunk-*.active``) and torn
+    manifest temps (``manifest.json.tmp``) under the recordings root. The
+    per-chunk manifest persistence means a recording's finalized chunks survive a
+    crash; this just clears the never-finalized leftovers so they don't linger or
+    confuse `storage list`. Returns the number of files removed.
+    """
+    root = recordings_dir()
+    if not root.is_dir():
+        return 0
+    removed = 0
+    for rec_dir in root.iterdir():
+        if not rec_dir.is_dir():
+            continue
+        for tmp in rec_dir.glob("manifest.json.tmp"):
+            tmp.unlink(missing_ok=True)
+            removed += 1
+        chunks = rec_dir / "chunks"
+        if chunks.is_dir():
+            for active in chunks.glob(".chunk-*.active"):
+                active.unlink(missing_ok=True)
+                removed += 1
+    return removed

@@ -37,10 +37,20 @@ from typing import Optional
 import zenoh
 
 from .commands import parse_envelope
-from .config import NodeConfig, StartParams, load_config, resolve_start_params
-from .session import RecordingSession
+from .config import (
+    NodeConfig,
+    StartParams,
+    generate_recording_name,
+    load_config,
+    resolve_start_params,
+)
+from .session import RecordingSession, RingBufferSession
+from .storage_layout import sweep_incomplete_temps, validate_recording_name
 
 log = logging.getLogger(__name__)
+
+# Stamped into every manifest's `recorder_version` for provenance.
+RECORDER_VERSION = "0.1.0"
 
 
 def _resolve_machine_id(ctx) -> str:
@@ -70,7 +80,8 @@ class RecorderNode:
         # Active session state — guarded by _lock so commands and the
         # shutdown path don't race.
         self._lock = threading.Lock()
-        self._active: Optional[RecordingSession] = None
+        # Either a RecordingSession (streaming) or a RingBufferSession.
+        self._active: Optional[object] = None
         log.info(
             "mcap-recorder ready (command-driven), name=%s machine_id=%s",
             self._config.name,
@@ -78,21 +89,33 @@ class RecorderNode:
         )
 
     def run(self) -> None:
+        # Crash resilience (§3.3.9): clear write-temps a previous crash left behind.
+        try:
+            swept = sweep_incomplete_temps()
+            if swept:
+                log.info("Swept %d incomplete write-temp file(s) from prior run", swept)
+        except Exception as exc:
+            log.warning("temp sweep failed: %s", exc)
+
         machine_id = self._machine_id
         instance = self._config.name
         command_key = f"bubbaloop/global/{machine_id}/{instance}/command"
+        status_key = f"bubbaloop/global/{machine_id}/{instance}/status"
         log.info("Declaring command queryable: %s", command_key)
+        log.info("Declaring status queryable: %s", status_key)
 
         queryable = self._ctx.session.declare_queryable(command_key, self._on_query)
+        status_queryable = self._ctx.session.declare_queryable(status_key, self._on_status_query)
         log.info("mcap-recorder running, waiting for commands…")
         try:
             self._ctx.wait_shutdown()
         finally:
             log.info("Shutdown — finalising any active session")
-            try:
-                queryable.undeclare()
-            except Exception as exc:
-                log.warning("queryable.undeclare failed: %s", exc)
+            for q in (queryable, status_queryable):
+                try:
+                    q.undeclare()
+                except Exception as exc:
+                    log.warning("queryable.undeclare failed: %s", exc)
             with self._lock:
                 if self._active is not None:
                     summary = self._active.stop()
@@ -121,6 +144,7 @@ class RecorderNode:
         handlers = {
             "start_recording": self._handle_start,
             "stop_recording": self._handle_stop,
+            "flush_recording": self._handle_flush,
             "get_status": self._handle_status,
         }
         handler = handlers.get(cmd)
@@ -156,30 +180,56 @@ class RecorderNode:
                 self._reply_error(query, "E_INVALID_PARAMS", str(exc))
                 return
             try:
-                session = RecordingSession(
-                    zenoh_session=self._ctx.session,
-                    name=params.name,
-                    machine_id=self._machine_id,
-                    topic_patterns=list(params.topic_patterns),
-                    exclude=list(params.exclude),
-                    chunk_duration_secs=params.chunk_duration_secs,
-                    chunk_max_bytes=params.chunk_max_bytes,
-                    decode_timestamps=params.decode_timestamps,
-                )
+                if params.mode == "ring_buffer":
+                    session = RingBufferSession(
+                        zenoh_session=self._ctx.session,
+                        machine_id=self._machine_id,
+                        topic_patterns=list(params.topic_patterns),
+                        window_secs=params.window_secs,
+                        ring_max_bytes=params.ring_max_bytes,
+                        decode_timestamps=params.decode_timestamps,
+                        exclude=list(params.exclude),
+                        recorder_version=RECORDER_VERSION,
+                    )
+                else:
+                    session = RecordingSession(
+                        zenoh_session=self._ctx.session,
+                        name=params.name,
+                        machine_id=self._machine_id,
+                        topic_patterns=list(params.topic_patterns),
+                        exclude=list(params.exclude),
+                        chunk_duration_secs=params.chunk_duration_secs,
+                        chunk_max_bytes=params.chunk_max_bytes,
+                        decode_timestamps=params.decode_timestamps,
+                        recorder_version=RECORDER_VERSION,
+                    )
                 session.start()
             except Exception as exc:
                 self._reply_error(query, "E_START_FAILED", f"{type(exc).__name__}: {exc}")
                 return
             self._active = session
-        self._reply_ok(
-            query,
-            {
-                "status": "started",
-                "name": session.name,
-                "recording_dir": str(session._dir),
-                "topic_patterns": list(params.topic_patterns),
-            },
-        )
+
+        if params.mode == "ring_buffer":
+            self._reply_ok(
+                query,
+                {
+                    "status": "started",
+                    "mode": "ring_buffer",
+                    "window_secs": params.window_secs,
+                    "topic_patterns": list(params.topic_patterns),
+                },
+            )
+        else:
+            self._reply_ok(
+                query,
+                {
+                    "status": "started",
+                    "mode": "streaming",
+                    "name": session.name,
+                    "recording_dir": str(session._dir),
+                    "topic_patterns": list(params.topic_patterns),
+                },
+            )
 
     def _handle_stop(self, query: zenoh.Query, _envelope: dict) -> None:
         with self._lock:
@@ -189,6 +239,46 @@ class RecorderNode:
             summary = self._active.stop()
             self._active = None
         self._reply_ok(query, {"status": "stopped", **summary})
+
+    def _handle_flush(self, query: zenoh.Query, envelope: dict) -> None:
+        # Resolve the target recording name (default to a generated one) outside
+        # the lock; validate before touching the session.
+        name = envelope.get("name")
+        if name is None:
+            name = generate_recording_name()
+        elif not isinstance(name, str):
+            self._reply_error(query, "E_INVALID_PARAMS", "name must be a string")
+            return
+        try:
+            validate_recording_name(name)
+        except ValueError as exc:
+            self._reply_error(query, "E_INVALID_PARAMS", str(exc))
+            return
+
+        with self._lock:
+            if self._active is None or getattr(self._active, "mode", "streaming") != "ring_buffer":
+                self._reply_error(
+                    query,
+                    "E_NOT_RING_BUFFER",
+                    "flush_recording requires an active ring_buffer session",
+                )
+                return
+            try:
+                summary = self._active.flush(name)
+            except ValueError as exc:
+                self._reply_error(query, "E_EMPTY_BUFFER", str(exc))
+                return
+        self._reply_ok(query, {"status": "flushed", **summary})
+
+    def _on_status_query(self, query: zenoh.Query) -> None:
+        """Serve the `{instance}/status` queryable (§3.3.8) — lets the daemon /
+        dashboard poll recorder state without sending a command."""
+        with self._lock:
+            if self._active is None:
+                body = {"status": "idle"}
+            else:
+                body = {"status": "recording", **self._active.status()}
+        self._reply_ok(query, body)
 
     def _handle_status(self, query: zenoh.Query, _envelope: dict) -> None:
         with self._lock:

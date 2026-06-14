@@ -19,7 +19,7 @@ import re
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Mapping, Sequence, Tuple
+from typing import Mapping, Optional, Sequence, Tuple
 
 from .storage_layout import validate_recording_name
 
@@ -37,6 +37,9 @@ class NodeConfig:
     name: str
 
 
+DEFAULT_RING_MAX_BYTES = 256 * 1024 * 1024  # 256 MiB in-memory window cap
+
+
 @dataclass(frozen=True)
 class StartParams:
     """One recording session's resolved + validated parameters."""
@@ -44,9 +47,13 @@ class StartParams:
     name: str
     topic_patterns: Tuple[str, ...]
     exclude: Tuple[str, ...]
+    mode: str  # "streaming" | "ring_buffer"
     chunk_duration_secs: int
     chunk_max_bytes: int
     decode_timestamps: bool
+    # Ring-buffer-only (None for streaming).
+    window_secs: Optional[int] = None
+    ring_max_bytes: int = DEFAULT_RING_MAX_BYTES
 
 
 def load_config(cfg: Mapping[str, object]) -> NodeConfig:
@@ -56,7 +63,7 @@ def load_config(cfg: Mapping[str, object]) -> NodeConfig:
     return NodeConfig(name=name)
 
 
-def _generate_recording_name() -> str:
+def generate_recording_name() -> str:
     """A default recording name like `rec_20260615_031400` (valid + sortable)."""
     return "rec_" + datetime.now().strftime("%Y%m%d_%H%M%S")
 
@@ -84,12 +91,29 @@ def resolve_start_params(params: Mapping[str, object]) -> StartParams:
 
     name = params.get("name")
     if name is None:
-        name = _generate_recording_name()
+        name = generate_recording_name()
     elif not isinstance(name, str):
         raise ValueError("name must be a string")
     # Same guard as the Rust storage layer — a bad name can't escape the
-    # recordings directory.
+    # recordings directory. (In ring_buffer mode `name` is the default for
+    # flushes rather than the recording itself, but the guard still applies.)
     validate_recording_name(name)
+
+    mode = params.get("mode", "streaming")
+    if mode not in ("streaming", "ring_buffer"):
+        raise ValueError(f"mode must be 'streaming' or 'ring_buffer' (got {mode!r})")
+
+    window_secs: Optional[int] = None
+    ring_max_bytes = DEFAULT_RING_MAX_BYTES
+    if mode == "ring_buffer":
+        if "window_secs" not in params:
+            raise ValueError("window_secs is required for ring_buffer mode")
+        window_secs = int(params["window_secs"])
+        if window_secs <= 0:
+            raise ValueError("window_secs must be > 0")
+        ring_max_bytes = int(params.get("ring_max_bytes", DEFAULT_RING_MAX_BYTES))
+        if ring_max_bytes <= 0:
+            raise ValueError("ring_max_bytes must be > 0")
 
     chunk_duration = int(params.get("chunk_duration_secs", DEFAULT_CHUNK_DURATION_SECS))
     if chunk_duration <= 0:
@@ -102,7 +126,10 @@ def resolve_start_params(params: Mapping[str, object]) -> StartParams:
         name=name,
         topic_patterns=tuple(raw_patterns),
         exclude=tuple(raw_exclude),
+        mode=mode,
         chunk_duration_secs=chunk_duration,
         chunk_max_bytes=chunk_max_bytes,
         decode_timestamps=bool(params.get("decode_timestamps", DEFAULT_DECODE_TIMESTAMPS)),
+        window_secs=window_secs,
+        ring_max_bytes=ring_max_bytes,
     )

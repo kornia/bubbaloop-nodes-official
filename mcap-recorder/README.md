@@ -1,21 +1,55 @@
 # mcap-recorder
 
-Command-driven Python node that records Zenoh CBOR/JSON/raw traffic into chunked MCAP files. Installs without a Rust toolchain — pure Python via pixi, runs on Linux and macOS.
+Command-driven Python node that records Zenoh CBOR/JSON/protobuf/raw traffic into
+**storage-layer-compatible** recordings — `manifest.json` + content-addressed MCAP
+chunks under `~/.bubbaloop/recordings/<name>/`. Installs without a Rust toolchain
+(pure Python via pixi); runs on Linux and macOS.
 
 ## What it does
 
-The process starts clean (no recording). Recording sessions begin and end on commands sent to its Zenoh `command` queryable.
+The process starts idle. Recording sessions begin/end on commands sent to its
+Zenoh `command` queryable, and current state is also exposed on a `status`
+queryable.
 
-Subscribes to one or more Zenoh key patterns and writes MCAP chunks to disk:
+Each recording is written in the exact on-disk format the bubbaloop daemon's
+storage subsystem consumes — so `bubbaloop storage list/info/upload/download/
+reconcile/replay`, the background sync driver, and the MCP `storage_*` tools all
+see recordings this node produces:
+
+```
+~/.bubbaloop/recordings/<name>/
+  manifest.json                       # schema_version=1; re-saved per chunk
+  chunks/chunk-000000-<sha8>.mcap     # canonical name = index + sha256 prefix
+  chunks/chunk-000001-<sha8>.mcap
+```
+
+- **Content-addressed chunks** — each finalized chunk is SHA-256-hashed and named
+  `chunk-{index:06}-{sha8}.mcap` (matches the Rust `Chunk::canonical_name`).
+- **Running manifest** — `manifest.json` is re-written atomically on every chunk
+  finalize, so the sync driver can upload chunks while recording continues and a
+  crash still leaves a valid manifest of the chunks finalized so far.
+- **§4.5 channel metadata** — every MCAP channel carries `zenoh.topic`,
+  `zenoh.encoding`, and (for protobuf) `bubbaloop.schema_name`, so `storage replay`
+  can re-publish with the original topic + encoding.
+- **Dual timestamps** — `log_time` (recorder receipt clock) + `publish_time`
+  (source time, decoded from the header when `decode_timestamps` is on).
+- **rosbag2 MCAP defaults** — 786432-byte internal chunk records, zstd, CRCs on.
 
 | Sample encoding | MCAP `message_encoding` | Notes |
 |---|---|---|
 | `application/cbor` | `cbor` | bytes recorded as-is; structurally self-describing |
 | `application/json` | `json` | bytes recorded as-is |
-| `application/protobuf;<name>` | `protobuf` | bytes recorded; no schema fetch in v0.1 |
-| (empty / raw) | `""` | opaque bytes |
+| `application/protobuf;<name>` | `protobuf` | best-effort schema fetch from the source node's `{instance}/schema` |
+| (empty / raw) | `raw` | opaque bytes |
 
-CBOR is the canonical encoding on bubbaloop today — see `docs/concepts/wire-format.md` upstream. Because CBOR is structurally self-describing, no schema-discovery wait is required before recording starts.
+## Capture modes
+
+- **streaming** (default) — subscribe and write straight to disk, rotating chunk
+  files by size/duration.
+- **ring_buffer** (§3.3.5) — keep a bounded in-memory sliding window
+  (`window_secs` + a byte cap); a `flush_recording` command seals the *current*
+  window into a new recording, then buffering continues. Capture "the last N
+  seconds" around an event after the fact.
 
 ## Install
 
@@ -24,93 +58,88 @@ cd bubbaloop-nodes-official/mcap-recorder
 pixi install
 ```
 
-`pixi.toml` lists `osx-arm64` / `osx-64` so resolve works on Apple Silicon and Intel Macs as well as Linux.
-
 ## Configure
 
-`config.yaml` carries the install-time fields — node identity and where chunks land on this machine:
+`config.yaml` carries only the node identity (the Zenoh prefix for its
+queryables). Recordings always land under `~/.bubbaloop/recordings/<name>/` so the
+storage layer can find them — the location is no longer a config knob (a legacy
+`output_dir` field is accepted but ignored).
 
 ```yaml
 name: mcap-recorder
-output_dir: ~/.bubbaloop/recordings
 ```
-
-`~` expands at load. The default `~/.bubbaloop/recordings` is user-writable so a fresh install works without sudo.
 
 | Param | Where it comes from |
 |---|---|
-| `name` | `config.yaml` (required at boot — used as the Zenoh prefix) |
-| `output_dir` | `config.yaml` (required at install — disk is per-machine; `~` expands) |
-| `topic_patterns` | `start_recording` command — required, no default |
-| `chunk_duration_secs` (default 300), `chunk_max_bytes` (default 1 GiB), `decode_timestamps` (default false) | `start_recording` command — code defaults if omitted |
-
-### Hardening / output_dir interaction
-
-The bubbaloop daemon emits `ProtectHome=read-only` and `ProtectSystem=strict` in the generated systemd unit (Python sandbox). These block writes everywhere except `/dev`, `/proc`, `/sys`. To make `output_dir` writable at runtime, the unit needs a `ReadWritePaths=<output_dir>` line — but the daemon's unit template doesn't expose that yet (tracked as a feature gap; until then, edit the unit by hand after install):
-
-```bash
-sed -i "s|^ProtectSystem=strict|ProtectSystem=strict\nReadWritePaths=$(yq -r .output_dir ~/.bubbaloop/configs/mcap-recorder.yaml)|" \
-  ~/.config/systemd/user/bubbaloop-mcap-recorder.service
-systemctl --user daemon-reload && systemctl --user restart bubbaloop-mcap-recorder
-```
-
-Or pick a non-`/home` path (e.g. `/var/lib/bubbaloop/recordings`) and create+chown it with sudo first.
+| `name` | `config.yaml` — the Zenoh prefix for the `command`/`status` queryables |
+| `topic_patterns` | `start_recording` — required, no default |
+| `name` (recording) | `start_recording` / `flush_recording` — defaults to `rec_<timestamp>` |
+| `exclude` | `start_recording` — optional exclude patterns (recorded in the manifest selection) |
+| `mode` | `start_recording` — `streaming` (default) or `ring_buffer` |
+| `window_secs` | `start_recording` — required for `ring_buffer` mode |
+| `chunk_duration_secs` (300), `chunk_max_bytes` (1 GiB), `decode_timestamps` (false) | `start_recording` — code defaults |
 
 ## Register and run via bubbaloop
 
 ```bash
-bubbaloop node add /abs/path/to/mcap-recorder \
-  -n mcap-recorder \
+bubbaloop node add /abs/path/to/mcap-recorder -n mcap-recorder \
   -c /abs/path/to/mcap-recorder/config.yaml
 bubbaloop node install mcap-recorder
 bubbaloop node start mcap-recorder
 ```
 
-The node starts idle. Drive it with the bubbaloop MCP plugin's `node_command_send` tool:
+Drive it with the MCP `node_command_send` tool (replies are JSON):
 
 ```jsonc
-// start a recording (omit chunking knobs → code defaults)
+// streaming recording (name auto-generated if omitted)
 { "command": "start_recording",
+  "name": "garage_run_1",
   "topic_patterns": ["bubbaloop/global/*/tapo_terrace_camera/**"],
+  "exclude": ["**/health"],
   "chunk_duration_secs": 60 }
 
-// stop & finalise the active session
+// ring-buffer capture: buffer the last 30s in memory
+{ "command": "start_recording", "mode": "ring_buffer", "window_secs": 30,
+  "topic_patterns": ["bubbaloop/global/**"] }
+
+// seal the current ring-buffer window into a recording
+{ "command": "flush_recording", "name": "event_1234" }
+
+// stop the active session
 { "command": "stop_recording" }
 
-// query state — "idle" or "recording" with counters
+// poll state — also available without a command on the `status` queryable
 { "command": "get_status" }
 ```
 
-Replies are JSON. Errors are `{ "status": "error", "code": "E_*", "message": "..." }`.
+Errors are `{ "status": "error", "code": "E_*", "message": "..." }`.
 
 | Code | Meaning |
 |---|---|
-| `E_ALREADY_RECORDING` | session active — call `stop_recording` first |
-| `E_INVALID_PARAMS` | command failed validation (missing `topic_patterns`, bad chunk knob, etc.) |
+| `E_ALREADY_RECORDING` | a session is active — `stop_recording` first |
+| `E_INVALID_PARAMS` | failed validation (missing `topic_patterns`, bad `name`, missing `window_secs`, …) |
+| `E_NOT_RING_BUFFER` | `flush_recording` without an active `ring_buffer` session |
+| `E_EMPTY_BUFFER` | `flush_recording` with an empty window |
 | `E_UNKNOWN_CMD` | unsupported `command` value |
-| `E_BAD_JSON` / `E_BAD_SHAPE` / `E_EMPTY` | wire-format problems |
 
-The recorder accepts both flat (bubbaloop ≥ PR #80) and nested (`{params: {...}}`) envelopes, so it works against old and new daemons without coordination.
-
-## Output
-
-Files in `output_dir`:
-
-```
-{session_id}_chunk_{NNN}.mcap          # finalized chunk
-{session_id}_chunk_{NNN}.mcap.active   # mid-write (process alive or crashed)
-```
-
-`session_id` is the start time as `YYYY-MM-DDTHH-MM-SS`. A leftover `.active` file means the process didn't shut down cleanly — the data is still readable.
+The recorder accepts both flat (bubbaloop ≥ PR #80) and nested (`{params: {...}}`)
+envelopes.
 
 ## Inspect
 
+Recordings are first-class to the daemon:
+
 ```bash
-pip install mcap
-python -m mcap.cli info /tmp/bubbaloop-recordings/2026-04-30T14-22-08_chunk_000.mcap
+bubbaloop storage list
+bubbaloop storage info <name>
+bubbaloop storage replay <name>     # re-publish into Zenoh
 ```
 
-Or load into Foxglove Studio (it reads `message_encoding="cbor"` natively).
+Or read a chunk directly (Foxglove reads `message_encoding="cbor"` natively):
+
+```bash
+python -m mcap.cli info ~/.bubbaloop/recordings/<name>/chunks/chunk-000000-<sha8>.mcap
+```
 
 ## Tests
 
@@ -124,18 +153,21 @@ pixi run -e dev test
 [Zenoh subscribers, N patterns]
         |  (callback per sample, runs on Zenoh threads)
         v
-[bounded queue.Queue, max 4096]
-        |  (single consumer)
-        v
-[mcap-writer thread] -- [ChunkedMcapWriter] -- [.active file] -- (rename) --> [.mcap file]
+   streaming: [bounded queue] -> [writer thread] -> [ChunkedMcapWriter]
+                                                       |  finalize: sha256 + canonical rename
+                                                       v
+                                  chunks/chunk-NNNNNN-<sha8>.mcap + manifest.json
+   ring_buffer: [RingBuffer (time+byte bounded)] --(flush)--> seal() -> recording
 ```
-
-The bridge from Zenoh threads → single writer thread is required because the `mcap` Python writer is not thread-safe. Subscriber callbacks stay cheap (one tuple put per sample); the writer thread does encoding routing and disk I/O.
 
 | Module | Responsibility |
 |---|---|
-| `recorder/node.py` | command queryable + dispatch |
-| `recorder/commands.py` | envelope parsing (flat + nested wire formats) |
-| `recorder/config.py` | `NodeConfig` (boot identity) + `StartParams` (per-session) |
-| `recorder/session.py` | subscribers + writer thread bridge |
-| `recorder/mcap_writer.py` | `ChunkedMcapWriter` with `.active` → `.mcap` rename |
+| `recorder/node.py` | `command` + `status` queryables, dispatch, startup temp-sweep |
+| `recorder/commands.py` | envelope parsing (flat + nested) |
+| `recorder/config.py` | `NodeConfig` + `StartParams` (incl. mode / ring-buffer / name) |
+| `recorder/session.py` | `RecordingSession` (streaming) + `RingBufferSession` |
+| `recorder/mcap_writer.py` | `ChunkedMcapWriter` — canonical sha256 chunks, §4.5 metadata, dual timestamps |
+| `recorder/ring_buffer.py` | `RingBuffer` window + `seal()` |
+| `recorder/manifest.py` | `manifest.json` model (Recording/Channel/Chunk), atomic write |
+| `recorder/storage_layout.py` | paths, name validation, canonical naming, SHA-256, crash sweep |
+| `recorder/schema_fetch.py` | best-effort protobuf descriptor fetch (§3.3.4) |
