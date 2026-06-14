@@ -4,11 +4,13 @@ The process starts clean (no recording). It declares a Zenoh `command`
 queryable and serves three commands sent via the bubbaloop MCP plugin's
 `node_command_send` tool (or directly via Zenoh):
 
-  start_recording { topic_patterns,
+  start_recording { topic_patterns, name?, exclude?,
                     chunk_duration_secs?, chunk_max_bytes?, decode_timestamps? }
-      Begins a new session. `topic_patterns` is required; chunking knobs
-      fall back to code-level defaults (see config.py). `output_dir` is
-      install-time, lives in config.yaml — not overridable per session.
+      Begins a new session. `topic_patterns` is required; `name` defaults to a
+      generated `rec_<timestamp>` (validated like a Rust recording name); the
+      chunking knobs fall back to code-level defaults (see config.py). The
+      recording always lands under `~/.bubbaloop/recordings/<name>/` so the
+      daemon's storage layer can see it — not a per-session path.
       Errors `E_ALREADY_RECORDING` if a session is already active.
 
   stop_recording {}
@@ -64,18 +66,19 @@ class RecorderNode:
     def __init__(self, ctx, config: dict):
         self._ctx = ctx
         self._config: NodeConfig = load_config(config)
+        self._machine_id = _resolve_machine_id(ctx)
         # Active session state — guarded by _lock so commands and the
         # shutdown path don't race.
         self._lock = threading.Lock()
         self._active: Optional[RecordingSession] = None
         log.info(
-            "mcap-recorder ready (command-driven), name=%s output_dir=%s",
+            "mcap-recorder ready (command-driven), name=%s machine_id=%s",
             self._config.name,
-            self._config.output_dir,
+            self._machine_id,
         )
 
     def run(self) -> None:
-        machine_id = _resolve_machine_id(self._ctx)
+        machine_id = self._machine_id
         instance = self._config.name
         command_key = f"bubbaloop/global/{machine_id}/{instance}/command"
         log.info("Declaring command queryable: %s", command_key)
@@ -152,25 +155,29 @@ class RecorderNode:
             except ValueError as exc:
                 self._reply_error(query, "E_INVALID_PARAMS", str(exc))
                 return
-            output_dir = self._config.output_dir
-            output_dir.mkdir(parents=True, exist_ok=True)
-            session = RecordingSession(
-                zenoh_session=self._ctx.session,
-                topic_patterns=list(params.topic_patterns),
-                output_dir=output_dir,
-                chunk_duration_secs=params.chunk_duration_secs,
-                chunk_max_bytes=params.chunk_max_bytes,
-                decode_timestamps=params.decode_timestamps,
-            )
-            session.start()
+            try:
+                session = RecordingSession(
+                    zenoh_session=self._ctx.session,
+                    name=params.name,
+                    machine_id=self._machine_id,
+                    topic_patterns=list(params.topic_patterns),
+                    exclude=list(params.exclude),
+                    chunk_duration_secs=params.chunk_duration_secs,
+                    chunk_max_bytes=params.chunk_max_bytes,
+                    decode_timestamps=params.decode_timestamps,
+                )
+                session.start()
+            except Exception as exc:
+                self._reply_error(query, "E_START_FAILED", f"{type(exc).__name__}: {exc}")
+                return
             self._active = session
         self._reply_ok(
             query,
             {
                 "status": "started",
-                "session_id": session.session_id,
+                "name": session.name,
+                "recording_dir": str(session._dir),
                 "topic_patterns": list(params.topic_patterns),
-                "output_dir": str(output_dir),
             },
         )
 
