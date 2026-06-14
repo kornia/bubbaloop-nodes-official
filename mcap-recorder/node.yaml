@@ -1,7 +1,7 @@
 name: mcap-recorder
-version: "0.1.0"
+version: "0.2.0"
 type: python
-description: Records Zenoh CBOR/JSON traffic into chunked MCAP files for dataset collection
+description: Records Zenoh traffic into storage-layer-compatible recordings (manifest.json + content-addressed MCAP chunks); streaming + ring-buffer modes
 author: Bubbaloop Team
 
 command: pixi run main
