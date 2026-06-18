@@ -1,10 +1,14 @@
 #!/usr/bin/env python3
-"""oak-camera — publishes OAK RGB + aligned depth as RGBD messages.
+"""oak-camera — publishes OAK RGB + aligned depth + raw left/right mono + IMU.
 
 Topics (auto-scoped under ``config.name``):
 
 - ``{name}/compressed``  — global CBOR, body = {width, height, rgb:{encoding:"jpeg", data},
   depth?:{encoding:"rvl", data}}. depth present when a stereo camera is attached.
+- ``{name}/mono_left``   — global CBOR, body = {width, height, encoding:"jpeg", data}.
+  Only published when a stereo camera is attached.
+- ``{name}/mono_right``  — global CBOR, body = {width, height, encoding:"jpeg", data}.
+  Only published when a stereo camera is attached.
 - ``{name}/rgbd``        — local SHM CBOR, body = {header, rgb, depth?}.
 - ``{name}/imu``         — global CBOR (opt-in), body = {accel, gyro, timestamp_us}.
 - ``{name}/grab_frame``  — local queryable, returns JPEG receipt JSON on demand.
@@ -189,6 +193,10 @@ class OakCameraNode:
         self._compressed_pub = ctx.publisher_cbor("compressed", schema_uri="bubbaloop://compressed/v1")
         self._rgbd_pub = ctx.publisher_cbor("rgbd", local=True, schema_uri="bubbaloop://rgbd/v1")
         self._imu_pub = ctx.publisher_cbor("imu")
+        # mono_left/mono_right are declared up-front; the run loop only puts on them
+        # when a stereo pair is actually attached (has_depth=True).
+        self._mono_left_pub = ctx.publisher_cbor("mono_left", schema_uri="bubbaloop://compressed/v1")
+        self._mono_right_pub = ctx.publisher_cbor("mono_right", schema_uri="bubbaloop://compressed/v1")
         self._seq = 0
 
         # Pre-allocated scratch buffer for BGR→RGBA (3.7 MB at 1280×720). Avoids
@@ -211,6 +219,8 @@ class OakCameraNode:
 
         log.info("Configured: %s", self._cfg)
         log.info("compressed → %s", ctx.topic("compressed"))
+        log.info("mono_left → %s", ctx.topic("mono_left"))
+        log.info("mono_right → %s", ctx.topic("mono_right"))
         log.info("rgbd (SHM) → %s", ctx.local_topic("rgbd"))
         log.info("imu → %s", ctx.topic("imu"))
         log.info("grab_frame queryable → %s", grab_key)
@@ -224,7 +234,8 @@ class OakCameraNode:
         separate queue so every packet between frames is delivered — not just
         the one closest to the frame timestamp.
 
-        Returns (q_sync, has_depth, q_imu).
+        Returns (q_rgb, has_depth, q_imu, q_mono_left, q_mono_right, q_depth).
+        Mono and depth queues are None when no stereo camera is attached.
         """
         w = self._cfg["width"]
         h = self._cfg["height"]
@@ -234,12 +245,18 @@ class OakCameraNode:
         rgb_out = cam_rgb.requestOutput((w, h), type=dai.ImgFrame.Type.BGR888i, fps=fps)
 
         stereo = None
+        mono_left_out = None
+        mono_right_out = None
         try:
             mono_left = pipeline.create(dai.node.Camera).build(dai.CameraBoardSocket.CAM_B)
             mono_right = pipeline.create(dai.node.Camera).build(dai.CameraBoardSocket.CAM_C)
             stereo = pipeline.create(dai.node.StereoDepth)
-            mono_left.requestOutput((640, 400), fps=fps).link(stereo.left)
-            mono_right.requestOutput((640, 400), fps=fps).link(stereo.right)
+            # Capture the camera outputs so we can both feed stereo AND tee a
+            # publish queue off them — without touching stereo's internal flow.
+            mono_left_out = mono_left.requestOutput((640, 400), fps=fps)
+            mono_right_out = mono_right.requestOutput((640, 400), fps=fps)
+            mono_left_out.link(stereo.left)
+            mono_right_out.link(stereo.right)
             stereo.setDepthAlign(dai.CameraBoardSocket.CAM_A)
             try:
                 stereo.setOutputSize(w, h)
@@ -249,18 +266,28 @@ class OakCameraNode:
         except Exception as exc:
             log.warning("Stereo depth unavailable (%s) — RGB-only mode", exc)
             stereo = None
+            mono_left_out = None
+            mono_right_out = None
 
-        # On-device sync: RGB + depth share the same capture timestamp.
-        # 16 ms = half a frame at 30 fps — tight enough for aligned RGBD,
-        # loose enough to absorb stereo pipeline latency.
-        sync = pipeline.create(dai.node.Sync)
-        sync.setSyncThreshold(timedelta(milliseconds=16))
-        sync.setSyncAttempts(-1)
-        rgb_out.link(sync.inputs["rgb"])
+        # RGB drives the loop cadence: blocking get(). Depth + mono drain
+        # independently via tryGet() so the loop never stalls if a side queue
+        # stops producing. (Sync node would gate everything on its slowest
+        # input; in practice this dropped depth entirely.)
+        q_sync = rgb_out.createOutputQueue(maxSize=4, blocking=False)
+        q_depth = None
         if stereo is not None:
-            stereo.depth.link(sync.inputs["depth"])
-        q_sync = sync.out.createOutputQueue(maxSize=4, blocking=False)
-        log.info("On-device Sync enabled (threshold=16ms)")
+            q_depth = stereo.depth.createOutputQueue(maxSize=4, blocking=False)
+            log.info("Depth queue attached (stereo.depth)")
+
+        # Mono left/right: tee a queue off each Camera's output (upstream of
+        # stereo). Independent of the rgb/depth sync, so a slow mono frame can
+        # never starve the depth path.
+        q_mono_left = None
+        q_mono_right = None
+        if mono_left_out is not None and mono_right_out is not None:
+            q_mono_left = mono_left_out.createOutputQueue(maxSize=4, blocking=False)
+            q_mono_right = mono_right_out.createOutputQueue(maxSize=4, blocking=False)
+            log.info("Mono pass-through queues attached (camera outputs)")
 
         q_imu = None
         try:
@@ -277,7 +304,7 @@ class OakCameraNode:
             log.warning("IMU unavailable (%s) — IMU disabled", exc)
             q_imu = None
 
-        return q_sync, stereo is not None, q_imu
+        return q_sync, stereo is not None, q_imu, q_mono_left, q_mono_right, q_depth
 
     def _open_device(self) -> dai.Device:
         """Open the first available OAK device, falling back to USB2 if USB3 fails.
@@ -306,7 +333,7 @@ class OakCameraNode:
 
         device = self._open_device()
         with dai.Pipeline(device) as pipeline:
-            q_sync, has_depth, q_imu = self._build_pipeline(pipeline)
+            q_rgb, has_depth, q_imu, q_mono_left, q_mono_right, q_depth = self._build_pipeline(pipeline)
             pipeline.start()
             log.info("Pipeline started. Streaming at %.1f fps", cfg["fps"])
 
@@ -315,25 +342,24 @@ class OakCameraNode:
             depth_h = 0
 
             while not ctx.is_shutdown():
-                group = q_sync.get()
-                if group is None:
+                rgb_msg = q_rgb.get()
+                if rgb_msg is None:
                     continue
 
-                rgb_msg = group["rgb"]
                 bgr = rgb_msg.getCvFrame()
                 h, w = bgr.shape[:2]
                 # Use the device-clock capture timestamp so RGB, depth, and IMU
                 # timestamps are all on the same clock domain.
                 acq_time_ns = int(rgb_msg.getTimestampDevice().total_seconds() * 1e9)
 
-                if has_depth and "depth" in group:
-                    depth_msg = group["depth"]
-                    # Copy out of DepthAI-owned memory — the view goes stale
-                    # once the message group is released.
-                    depth_frame = np.ascontiguousarray(
-                        depth_msg.getFrame().astype(np.uint16, copy=False)
-                    )
-                    depth_h, depth_w = depth_frame.shape
+                # Depth runs at its own cadence; pick up the latest frame if any.
+                if has_depth and q_depth is not None:
+                    depth_msg = q_depth.tryGet()
+                    if depth_msg is not None:
+                        depth_frame = np.ascontiguousarray(
+                            depth_msg.getFrame().astype(np.uint16, copy=False)
+                        )
+                        depth_h, depth_w = depth_frame.shape
 
                 # BGR→RGBA: reverse color channels into pre-allocated buffer (alpha stays 255).
                 np.copyto(self._rgba_buf[:, :, :3], bgr[:, :, ::-1])
@@ -381,6 +407,30 @@ class OakCameraNode:
                         msg["depth"] = {"encoding": "rvl", "data": depth_rvl}
                     self._compressed_pub.put(msg)
 
+                    # Raw mono left/right: drain the latest frame from each
+                    # pass-through queue. Independent of the rgb/depth sync —
+                    # missed frames are simply dropped (maxSize=4, non-blocking).
+                    # kornia-rs jpeg encoder expects HWC RGB; stack the mono plane
+                    # into 3 channels (JPEG compresses the redundancy well).
+                    for q, pub in ((q_mono_left, self._mono_left_pub), (q_mono_right, self._mono_right_pub)):
+                        if q is None:
+                            continue
+                        mono_msg = q.tryGet()
+                        if mono_msg is None:
+                            continue
+                        mono = mono_msg.getCvFrame()  # HxW uint8
+                        mh, mw = mono.shape[:2]
+                        mono_3ch = np.repeat(mono[:, :, np.newaxis], 3, axis=2)
+                        mono_jpeg = kr.image.Image.frombuffer(
+                            np.ascontiguousarray(mono_3ch)
+                        ).encode("jpeg", quality=cfg["jpeg_quality"])
+                        pub.put({
+                            "width": mw,
+                            "height": mh,
+                            "encoding": "jpeg",
+                            "data": mono_jpeg,
+                        })
+
                 # IMU: drain all packets accumulated since the last RGB frame.
                 # Kept on a separate queue (not in the sync group) so every reading
                 # between frames is delivered — not just the one nearest the frame.
@@ -401,6 +451,8 @@ class OakCameraNode:
         self._shutdown_evt.set()
         self._rgbd_pub.undeclare()
         self._compressed_pub.undeclare()
+        self._mono_left_pub.undeclare()
+        self._mono_right_pub.undeclare()
         self._imu_pub.undeclare()
 
 
